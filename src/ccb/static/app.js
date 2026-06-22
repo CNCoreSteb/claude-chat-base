@@ -1,10 +1,10 @@
-// Agora GUI — connects to the server over WebSocket, renders the live group chat,
-// and drives room/agent controls through the REST API.
+// Claude Chat Base 界面 —— 通过 WebSocket 连接服务端，渲染实时群聊，
+// 并通过 REST 接口驱动房间 / 智能体的各项操作。
 
 const state = {
-  agents: {},        // id -> agent
-  rooms: {},         // id -> room
-  messages: {},      // room_id -> [message]
+  agents: {},        // id -> 智能体
+  rooms: {},         // id -> 房间
+  messages: {},      // room_id -> [消息]
   server: {},
   currentRoomId: null,
 };
@@ -14,7 +14,7 @@ const PALETTE = [
   "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#3b82f6",
 ];
 
-// ---------- tiny helpers ----------
+// ---------- 小工具 ----------
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
   const node = document.createElement(tag);
@@ -22,9 +22,14 @@ const el = (tag, cls, text) => {
   if (text != null) node.textContent = text;
   return node;
 };
-const initials = (name) => (name || "?").trim().slice(0, 2).toUpperCase();
+// 头像缩写：中文等宽字符取首字，拉丁字母取前两位。
+const initials = (name) => {
+  const s = (name || "?").trim();
+  if (!s) return "?";
+  return s.codePointAt(0) > 0x2e7f ? Array.from(s)[0] : s.slice(0, 2).toUpperCase();
+};
 const fmtTime = (ts) =>
-  new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 
 let toastTimer = null;
 function toast(msg) {
@@ -43,26 +48,26 @@ async function api(method, path, body) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    toast(`Error: ${text}`);
+    toast(`错误：${text}`);
     throw new Error(text);
   }
   return res.status === 204 ? null : res.json();
 }
 
-// ---------- websocket ----------
+// ---------- WebSocket ----------
 let ws;
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
   ws.onclose = () => {
-    toast("Disconnected — reconnecting…");
+    toast("连接断开 —— 正在重连…");
     setTimeout(connect, 1200);
   };
   ws.onerror = () => ws.close();
 }
 
-const messageEls = new Map(); // message_id -> DOM node
+const messageEls = new Map(); // message_id -> DOM 节点
 
 function handleEvent(ev) {
   switch (ev.type) {
@@ -109,7 +114,7 @@ function applySnapshot(snap) {
   renderAll();
 }
 
-// ---------- message rendering ----------
+// ---------- 消息渲染 ----------
 function nearBottom(node) {
   return node.scrollHeight - node.scrollTop - node.clientHeight < 120;
 }
@@ -133,7 +138,7 @@ function appendDelta(id, delta) {
   const transcript = $("#transcript");
   const stick = nearBottom(transcript);
   textEl.textContent += delta;
-  // keep our local copy in sync for room switches
+  // 同步本地副本，便于切换房间时仍能正确渲染。
   const list = state.messages[state.currentRoomId] || [];
   const m = list.find((x) => x.id === id);
   if (m) m.content = textEl.textContent;
@@ -184,7 +189,7 @@ function renderTranscript() {
     const empty = el("div", "empty-state");
     empty.id = "empty-state";
     empty.innerHTML =
-      '<div class="empty-state__icon">💬</div><p>Press <strong>Start</strong> to watch the agents talk, or type a message to kick things off.</p>';
+      '<div class="empty-state__icon">💬</div><p>点击<strong>开始</strong>观看智能体对话，或直接输入一句话来引出话题。</p>';
     transcript.appendChild(empty);
     return;
   }
@@ -196,7 +201,7 @@ function renderTranscript() {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
-// ---------- rooms ----------
+// ---------- 房间 ----------
 function renderRooms() {
   const list = $("#room-list");
   list.innerHTML = "";
@@ -206,11 +211,15 @@ function renderRooms() {
     const meta = el("div", "room-item__meta");
     const dot = el("span", "dot " + room.status);
     meta.appendChild(dot);
-    meta.appendChild(el("span", null, `${room.status} · ${room.agent_ids.length} agents`));
+    meta.appendChild(el("span", null, `${statusText(room.status)} · ${room.agent_ids.length} 名成员`));
     li.appendChild(meta);
     li.onclick = () => selectRoom(room.id);
     list.appendChild(li);
   }
+}
+
+function statusText(s) {
+  return { idle: "空闲", running: "进行中", paused: "已暂停" }[s] || s;
 }
 
 function selectRoom(id) {
@@ -221,33 +230,33 @@ function selectRoom(id) {
   renderAgents();
 }
 
-// ---------- header / controls ----------
+// ---------- 顶栏 / 控制 ----------
 function renderHeader() {
   const room = state.rooms[state.currentRoomId];
-  $("#room-name").textContent = room ? room.name : "No room selected";
+  $("#room-name").textContent = room ? room.name : "未选择房间";
   $("#room-topic").textContent = room ? room.topic : "";
   const controls = $("#chat-controls");
   controls.innerHTML = "";
   if (!room) return;
 
   controls.appendChild(
-    el("span", "turn-counter", `turn ${room.turn}/${room.max_turns}`)
+    el("span", "turn-counter", `第 ${room.turn}/${room.max_turns} 轮`)
   );
 
   const running = room.status === "running";
   const paused = room.status === "paused";
 
   if (!running) {
-    controls.appendChild(button(paused ? "Resume" : "Start", "btn--primary", () =>
+    controls.appendChild(button(paused ? "继续" : "开始", "btn--primary", () =>
       api("POST", `/api/rooms/${room.id}/start`)));
   } else {
-    controls.appendChild(button("Pause", "", () => api("POST", `/api/rooms/${room.id}/pause`)));
+    controls.appendChild(button("暂停", "", () => api("POST", `/api/rooms/${room.id}/pause`)));
   }
   if (running || paused) {
-    controls.appendChild(button("Stop", "btn--ghost", () => api("POST", `/api/rooms/${room.id}/stop`)));
+    controls.appendChild(button("停止", "btn--ghost", () => api("POST", `/api/rooms/${room.id}/stop`)));
   }
-  controls.appendChild(button("Reset", "btn--ghost btn--danger", () => api("POST", `/api/rooms/${room.id}/reset`)));
-  controls.appendChild(button("Edit", "btn--ghost", () => editRoom(room)));
+  controls.appendChild(button("重置", "btn--ghost btn--danger", () => api("POST", `/api/rooms/${room.id}/reset`)));
+  controls.appendChild(button("编辑", "btn--ghost", () => editRoom(room)));
 }
 
 function button(label, cls, onClick) {
@@ -256,7 +265,7 @@ function button(label, cls, onClick) {
   return b;
 }
 
-// ---------- agents ----------
+// ---------- 智能体 ----------
 function renderAgents() {
   const room = state.rooms[state.currentRoomId];
   const list = $("#agent-list");
@@ -279,16 +288,16 @@ function renderAgents() {
 
     if (a.kind === "ai") {
       const toggle = el("button", "tiny-btn", a.enabled ? "🔵" : "⚪");
-      toggle.title = a.enabled ? "Mute" : "Unmute";
+      toggle.title = a.enabled ? "静音" : "取消静音";
       toggle.onclick = () => api("PATCH", `/api/agents/${a.id}`, { enabled: !a.enabled });
       li.appendChild(toggle);
       const edit = el("button", "tiny-btn", "✎");
-      edit.title = "Edit";
+      edit.title = "编辑";
       edit.onclick = () => editAgent(a);
       li.appendChild(edit);
     }
     const rm = el("button", "tiny-btn", "✕");
-    rm.title = "Remove from room";
+    rm.title = "移出房间";
     rm.onclick = () => api("DELETE", `/api/rooms/${room.id}/agents/${a.id}`);
     li.appendChild(rm);
     list.appendChild(li);
@@ -297,10 +306,10 @@ function renderAgents() {
 }
 
 function statusLabel(a) {
-  if (!a.enabled) return "muted";
-  if (a.status === "thinking") return "thinking…";
-  if (a.status === "speaking") return "speaking…";
-  return a.kind === "peer" ? "peer (external)" : "idle";
+  if (!a.enabled) return "已静音";
+  if (a.status === "thinking") return "思考中…";
+  if (a.status === "speaking") return "发言中…";
+  return a.kind === "peer" ? "peer（外部）" : "空闲";
 }
 
 function renderAddExisting() {
@@ -310,7 +319,7 @@ function renderAddExisting() {
   if (!room) return;
   const available = Object.values(state.agents).filter((a) => !room.agent_ids.includes(a.id));
   const select = el("select");
-  select.appendChild(el("option", null, available.length ? "Add an agent…" : "No spare agents"));
+  select.appendChild(el("option", null, available.length ? "添加一个智能体…" : "没有可添加的智能体"));
   for (const a of available) {
     const opt = el("option", null, a.name);
     opt.value = a.id;
@@ -323,18 +332,18 @@ function renderAddExisting() {
   wrap.appendChild(select);
 }
 
-// ---------- server card ----------
+// ---------- 服务端信息卡 ----------
 function renderServerCard() {
   const s = state.server;
   const card = $("#server-card");
   const provider = s.provider || "mock";
   card.innerHTML = "";
   const line1 = el("div");
-  line1.innerHTML = `Provider <span class="badge ${provider}">${provider}</span>`;
+  line1.innerHTML = `提供方 <span class="badge ${provider}">${provider}</span>`;
   card.appendChild(line1);
-  card.appendChild(el("div", null, `Model: ${s.default_model || "—"}`));
+  card.appendChild(el("div", null, `模型：${s.default_model || "—"}`));
   if (!s.has_api_key) {
-    card.appendChild(el("div", null, "Tip: set AGORA_ANTHROPIC_API_KEY for real agents."));
+    card.appendChild(el("div", null, "提示：设置 CCB_ANTHROPIC_API_KEY 可启用真实智能体。"));
   }
 }
 
@@ -346,7 +355,7 @@ function renderAll() {
   renderServerCard();
 }
 
-// ---------- composer ----------
+// ---------- 输入框 ----------
 function setupComposer() {
   const input = $("#composer-input");
   const send = () => {
@@ -369,7 +378,7 @@ function setupComposer() {
   });
 }
 
-// ---------- modal ----------
+// ---------- 弹窗 ----------
 function openModal(title, fields, onSave) {
   $("#modal-title").textContent = title;
   const body = $("#modal-body");
@@ -427,19 +436,22 @@ function openModal(title, fields, onSave) {
 }
 function closeModal() { $("#modal-backdrop").hidden = true; }
 
-// ---------- modal actions ----------
+const STRATEGY_OPTIONS = [
+  { label: "主持人（由模型挑选发言者）", value: "director" },
+  { label: "轮流发言", value: "round_robin" },
+];
+
+// ---------- 弹窗操作 ----------
 function newRoom() {
   const agentOpts = Object.values(state.agents).map((a) => ({ label: a.name, value: a.id }));
-  openModal("New room", [
-    { key: "name", label: "Room name", value: "" },
-    { key: "topic", label: "Topic / goal", type: "textarea", value: "" },
-    { key: "strategy", label: "Turn-taking", type: "select", value: "director",
-      options: [{ label: "Director (LLM picks speaker)", value: "director" },
-                { label: "Round robin", value: "round_robin" }] },
-    { key: "max_turns", label: "Max turns", type: "number", value: 18 },
+  openModal("新建房间", [
+    { key: "name", label: "房间名称", value: "" },
+    { key: "topic", label: "话题 / 目标", type: "textarea", value: "" },
+    { key: "strategy", label: "发言方式", type: "select", value: "director", options: STRATEGY_OPTIONS },
+    { key: "max_turns", label: "最大轮数", type: "number", value: 18 },
   ], async (v) => {
     const room = await api("POST", "/api/rooms", {
-      name: v.name || "New room",
+      name: v.name || "新房间",
       topic: v.topic,
       strategy: v.strategy,
       max_turns: parseInt(v.max_turns) || 18,
@@ -450,14 +462,12 @@ function newRoom() {
 }
 
 function editRoom(room) {
-  openModal("Edit room", [
-    { key: "name", label: "Room name", value: room.name },
-    { key: "topic", label: "Topic / goal", type: "textarea", value: room.topic },
-    { key: "strategy", label: "Turn-taking", type: "select", value: room.strategy,
-      options: [{ label: "Director (LLM picks speaker)", value: "director" },
-                { label: "Round robin", value: "round_robin" }] },
-    { key: "max_turns", label: "Max turns", type: "number", value: room.max_turns },
-    { key: "turn_delay", label: "Delay between turns (s)", type: "number", value: room.turn_delay },
+  openModal("编辑房间", [
+    { key: "name", label: "房间名称", value: room.name },
+    { key: "topic", label: "话题 / 目标", type: "textarea", value: room.topic },
+    { key: "strategy", label: "发言方式", type: "select", value: room.strategy, options: STRATEGY_OPTIONS },
+    { key: "max_turns", label: "最大轮数", type: "number", value: room.max_turns },
+    { key: "turn_delay", label: "每轮间隔（秒）", type: "number", value: room.turn_delay },
   ], (v) => api("PATCH", `/api/rooms/${room.id}`, {
     name: v.name, topic: v.topic, strategy: v.strategy,
     max_turns: parseInt(v.max_turns) || room.max_turns,
@@ -466,13 +476,13 @@ function editRoom(room) {
 }
 
 function newAgent() {
-  openModal("New agent", [
-    { key: "name", label: "Name", value: "" },
-    { key: "persona", label: "Persona / role (system prompt)", type: "textarea", value: "" },
-    { key: "color", label: "Color", type: "color", value: PALETTE[Object.keys(state.agents).length % PALETTE.length] },
+  openModal("新增智能体", [
+    { key: "name", label: "名称", value: "" },
+    { key: "persona", label: "人设 / 角色（系统提示）", type: "textarea", value: "" },
+    { key: "color", label: "颜色", type: "color", value: PALETTE[Object.keys(state.agents).length % PALETTE.length] },
   ], async (v) => {
     const agent = await api("POST", "/api/agents", {
-      name: v.name || "Agent", persona: v.persona, color: v.color,
+      name: v.name || "智能体", persona: v.persona, color: v.color,
     });
     if (state.currentRoomId) {
       await api("POST", `/api/rooms/${state.currentRoomId}/agents/${agent.id}`);
@@ -481,18 +491,18 @@ function newAgent() {
 }
 
 function editAgent(a) {
-  openModal("Edit agent", [
-    { key: "name", label: "Name", value: a.name },
-    { key: "persona", label: "Persona / role (system prompt)", type: "textarea", value: a.persona },
-    { key: "temperature", label: "Temperature", type: "number", value: a.temperature },
-    { key: "color", label: "Color", type: "color", value: a.color },
+  openModal("编辑智能体", [
+    { key: "name", label: "名称", value: a.name },
+    { key: "persona", label: "人设 / 角色（系统提示）", type: "textarea", value: a.persona },
+    { key: "temperature", label: "温度", type: "number", value: a.temperature },
+    { key: "color", label: "颜色", type: "color", value: a.color },
   ], (v) => api("PATCH", `/api/agents/${a.id}`, {
     name: v.name, persona: v.persona,
     temperature: parseFloat(v.temperature), color: v.color,
   }));
 }
 
-// ---------- boot ----------
+// ---------- 启动 ----------
 function main() {
   $("#new-room-btn").onclick = newRoom;
   $("#add-agent-btn").onclick = newAgent;

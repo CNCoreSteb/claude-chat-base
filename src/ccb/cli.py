@@ -1,7 +1,7 @@
-"""Command-line entry point: ``agora`` (and ``python -m agora``).
+"""命令行入口：``ccb``（以及 ``python -m ccb``）。
 
-Boots the FastAPI app with uvicorn and, unless disabled, opens the GUI in the
-default browser once the server is healthy.
+用 uvicorn 启动 FastAPI 应用；除非显式禁用，否则在服务端健康后自动用默认浏览器
+打开 GUI。
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def _build_settings(args: argparse.Namespace) -> Settings:
 
 def _open_browser_when_ready(url: str, health_url: str) -> None:
     def _worker() -> None:
-        for _ in range(100):  # ~10s total
+        for _ in range(100):  # 总共约 10 秒
             try:
                 with urllib.request.urlopen(health_url, timeout=1) as resp:
                     if resp.status == 200:
@@ -51,24 +51,24 @@ def _open_browser_when_ready(url: str, health_url: str) -> None:
             threading.Event().wait(0.1)
         try:
             webbrowser.open(url)
-        except Exception:  # noqa: BLE001 - headless environments have no browser
+        except Exception:  # noqa: BLE001 - 无图形界面的环境没有浏览器
             pass
 
     threading.Thread(target=_worker, daemon=True).start()
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="agora", description="Agora — agent group chat.")
-    parser.add_argument("--host", help="Bind host (default 127.0.0.1)")
-    parser.add_argument("--port", type=int, help="Bind port (default 8800)")
+    parser = argparse.ArgumentParser(prog="ccb", description="Claude Chat Base —— 智能体群聊。")
+    parser.add_argument("--host", help="绑定主机（默认 127.0.0.1）")
+    parser.add_argument("--port", type=int, help="绑定端口（默认 8800）")
     parser.add_argument(
-        "--provider", choices=["auto", "anthropic", "mock"], help="LLM provider"
+        "--provider", choices=["auto", "anthropic", "mock"], help="LLM 提供方"
     )
-    parser.add_argument("--model", help="Default model id for agents")
-    parser.add_argument("--preset", help="Path to a TOML preset of agents/rooms")
-    parser.add_argument("--data-dir", help="Directory for transcripts/state")
-    parser.add_argument("--no-browser", action="store_true", help="Do not open a browser")
-    parser.add_argument("--log-level", default="info", help="uvicorn log level")
+    parser.add_argument("--model", help="智能体使用的默认模型 id")
+    parser.add_argument("--preset", help="智能体/房间预设的 TOML 文件路径")
+    parser.add_argument("--data-dir", help="对话记录 / 状态的存放目录")
+    parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    parser.add_argument("--log-level", default="info", help="uvicorn 日志级别")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -79,23 +79,23 @@ def main(argv: list[str] | None = None) -> None:
     settings = _build_settings(args)
     app = create_app(settings)
 
-    # 0.0.0.0 binds all interfaces; point the browser at localhost regardless.
+    # 0.0.0.0 监听所有网卡；无论如何都让浏览器指向 localhost。
     display_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host
     url = f"http://{display_host}:{settings.port}/"
     health_url = f"http://{display_host}:{settings.port}/api/health"
 
     banner = (
         "\n"
-        "  ┌──────────────────────────────────────────────┐\n"
-        "  │  Agora — agent group chat                      │\n"
-        f"  │  GUI:      {url:<36}│\n"
-        f"  │  Provider: {settings.resolved_provider():<36}│\n"
-        "  └──────────────────────────────────────────────┘\n"
+        "  ┌────────────────────────────────────────────────┐\n"
+        "  │  Claude Chat Base —— 智能体群聊                  │\n"
+        f"  │  界面：    {url:<37}│\n"
+        f"  │  提供方：  {settings.resolved_provider():<37}│\n"
+        "  └────────────────────────────────────────────────┘\n"
     )
     print(banner)
     if not settings.anthropic_api_key:
-        print("  No ANTHROPIC_API_KEY found — running the offline 'mock' provider.")
-        print("  Set AGORA_ANTHROPIC_API_KEY to use real Claude models.\n")
+        print("  未检测到 ANTHROPIC API 密钥 —— 正在使用离线的 'mock' 提供方。")
+        print("  设置 CCB_ANTHROPIC_API_KEY 即可使用真实的 Claude 模型。\n")
 
     if settings.open_browser:
         _open_browser_when_ready(url, health_url)

@@ -1,8 +1,8 @@
-"""FastAPI application: REST control plane + WebSocket event stream + static GUI.
+"""FastAPI 应用：REST 控制面 + WebSocket 事件流 + 静态 GUI。
 
-The GUI mutates state through REST endpoints; the Hub broadcasts the resulting
-events over ``/ws`` so every connected browser (and the originating one) updates
-live. The same REST surface is what the MCP peer bridge talks to.
+GUI 通过 REST 接口改变状态；Hub 再把由此产生的事件经 ``/ws`` 广播出去，从而让每个
+已连接的浏览器（包括发起操作的那个）实时更新。MCP peer 桥接使用的也是这同一套
+REST 接口。
 """
 
 from __future__ import annotations
@@ -29,10 +29,11 @@ from .models import (
 )
 from .orchestrator import Orchestrator
 
-log = logging.getLogger("agora.server")
+log = logging.getLogger("ccb.server")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-MENTION_RE = re.compile(r"@([A-Za-z][\w-]*)")
+# Python 的 \w 默认是 Unicode 感知的，已能匹配中文等字符。
+MENTION_RE = re.compile(r"@([\w-]+)")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -45,7 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hub.load_presets()
         app.state.hub = hub
         log.info(
-            "Agora ready — provider=%s model=%s",
+            "Claude Chat Base 就绪 —— provider=%s model=%s",
             settings.resolved_provider(),
             settings.default_model,
         )
@@ -54,12 +55,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             await hub.orchestrator.shutdown()
 
-    app = FastAPI(title="Agora", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Claude Chat Base", version="0.1.0", lifespan=lifespan)
 
     def hub() -> Hub:
         return app.state.hub
 
-    # ----- state --------------------------------------------------------------
+    # ----- 状态 --------------------------------------------------------------
 
     @app.get("/api/state")
     async def get_state() -> JSONResponse:
@@ -69,7 +70,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> dict:
         return {"ok": True}
 
-    # ----- agents -------------------------------------------------------------
+    # ----- 智能体 -------------------------------------------------------------
 
     @app.post("/api/agents")
     async def create_agent(data: AgentCreate) -> dict:
@@ -80,7 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def update_agent(agent_id: str, data: AgentUpdate) -> dict:
         agent = await hub().update_agent(agent_id, data)
         if not agent:
-            raise HTTPException(404, "agent not found")
+            raise HTTPException(404, "智能体不存在")
         return agent.model_dump()
 
     @app.delete("/api/agents/{agent_id}")
@@ -88,7 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().delete_agent(agent_id)
         return {"ok": True}
 
-    # ----- rooms --------------------------------------------------------------
+    # ----- 房间 --------------------------------------------------------------
 
     @app.post("/api/rooms")
     async def create_room(data: RoomCreate) -> dict:
@@ -99,14 +100,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def update_room(room_id: str, data: RoomUpdate) -> dict:
         room = await hub().update_room(room_id, data)
         if not room:
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         return room.model_dump()
 
     @app.post("/api/rooms/{room_id}/agents/{agent_id}")
     async def add_room_agent(room_id: str, agent_id: str) -> dict:
         room = hub().store.get_room(room_id)
         if not room:
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         if agent_id not in room.agent_ids and hub().store.get_agent(agent_id):
             room.agent_ids.append(agent_id)
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
@@ -116,18 +117,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def remove_room_agent(room_id: str, agent_id: str) -> dict:
         room = hub().store.get_room(room_id)
         if not room:
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         if agent_id in room.agent_ids:
             room.agent_ids.remove(agent_id)
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
         return room.model_dump()
 
-    # ----- room controls ------------------------------------------------------
+    # ----- 房间控制 ------------------------------------------------------
 
     @app.post("/api/rooms/{room_id}/start")
     async def start_room(room_id: str) -> dict:
         if not hub().store.get_room(room_id):
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         await hub().orchestrator.start(room_id)
         return {"ok": True}
 
@@ -147,22 +148,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().reset_room(room_id)
         return {"ok": True}
 
-    # ----- messages -----------------------------------------------------------
+    # ----- 消息 -----------------------------------------------------------
 
     @app.post("/api/rooms/{room_id}/messages")
     async def post_message(room_id: str, body: dict) -> dict:
         room = hub().store.get_room(room_id)
         if not room:
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         content = (body.get("content") or "").strip()
         if not content:
-            raise HTTPException(400, "content required")
+            raise HTTPException(400, "内容不能为空")
 
         agent_id = body.get("agent_id")
         if agent_id:
             agent = hub().store.get_agent(agent_id)
             if not agent:
-                raise HTTPException(404, "agent not found")
+                raise HTTPException(404, "智能体不存在")
             msg = Message(
                 room_id=room_id,
                 sender_id=agent.id,
@@ -175,7 +176,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             msg = Message(
                 room_id=room_id,
                 sender_id="human",
-                sender_name=body.get("sender_name") or "You",
+                sender_name=body.get("sender_name") or "你",
                 role="human",
                 color="#94a3b8",
                 content=content,
@@ -188,25 +189,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/rooms/{room_id}/messages")
     async def list_messages(room_id: str, since: float = 0.0) -> list[dict]:
         if not hub().store.get_room(room_id):
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         return [
             m.model_dump() for m in hub().store.history(room_id) if m.ts > since
         ]
 
-    # ----- peers (MCP bridge) -------------------------------------------------
+    # ----- peer（MCP 桥接） -------------------------------------------------
 
     @app.post("/api/peers")
     async def register_peer(body: dict) -> dict:
-        """Register an external Claude Code instance as a peer participant."""
+        """把一个外部 Claude Code 实例注册为 peer 参与者。"""
         room_id = body.get("room_id")
         room = hub().store.get_room(room_id) if room_id else None
         if not room:
-            raise HTTPException(404, "room not found")
+            raise HTTPException(404, "房间不存在")
         from .models import AGENT_COLORS
 
         agent = Agent(
             name=body.get("name") or "Peer",
-            persona=body.get("persona") or "An external Claude Code peer.",
+            persona=body.get("persona") or "一个外部的 Claude Code peer。",
             kind=AgentKind.PEER,
             color=AGENT_COLORS[len(hub().store.agents) % len(AGENT_COLORS)],
         )
@@ -217,7 +218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
         return {"agent_id": agent.id, "room_id": room_id, "color": agent.color}
 
-    # ----- websocket ----------------------------------------------------------
+    # ----- WebSocket ----------------------------------------------------------
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket) -> None:
@@ -236,7 +237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             h.unsubscribe(queue)
 
-    # ----- static GUI (mounted last so API routes win) ------------------------
+    # ----- 静态 GUI（最后挂载，保证 API 路由优先匹配） ------------------------
 
     if STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

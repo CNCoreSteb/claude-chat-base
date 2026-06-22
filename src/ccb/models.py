@@ -1,8 +1,8 @@
-"""Core domain models for Agora.
+"""CCB 的核心领域模型。
 
-These pydantic models describe the persistent/serializable state of the system:
-agents (participants), rooms (group chats), and messages. They are intentionally
-small and JSON-friendly so they can flow over the WebSocket and REST API verbatim.
+这些 pydantic 模型描述了系统中可持久化 / 可序列化的状态：智能体（参与者）、
+房间（群聊）以及消息。它们刻意保持精简、对 JSON 友好，因此可以原样通过
+WebSocket 和 REST 接口传输。
 """
 
 from __future__ import annotations
@@ -24,17 +24,17 @@ def _now() -> float:
 
 
 class AgentKind(StrEnum):
-    """How an agent produces its messages."""
+    """智能体产生消息的方式。"""
 
-    AI = "ai"  # Generated locally by the orchestrator via an LLM provider.
-    PEER = "peer"  # An external Claude Code instance posting through the MCP bridge.
+    AI = "ai"  # 由编排器通过 LLM 提供方在本地生成。
+    PEER = "peer"  # 外部 Claude Code 实例通过 MCP 桥接发言。
 
 
 class Strategy(StrEnum):
-    """How the orchestrator decides who speaks next."""
+    """编排器决定下一个发言者的策略。"""
 
-    DIRECTOR = "director"  # An LLM moderator nominates the next speaker.
-    ROUND_ROBIN = "round_robin"  # Cycle through enabled AI agents in order.
+    DIRECTOR = "director"  # 由 LLM 主持人提名下一个发言者。
+    ROUND_ROBIN = "round_robin"  # 在启用的 AI 智能体之间按顺序轮流。
 
 
 class RoomStatus(StrEnum):
@@ -43,7 +43,7 @@ class RoomStatus(StrEnum):
     PAUSED = "paused"
 
 
-# A curated palette so agents are visually distinct in the GUI without random colors.
+# 一组精选的配色，让智能体在 GUI 中区分明显，且不必使用随机色。
 AGENT_COLORS = [
     "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#06b6d4",
     "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#3b82f6",
@@ -55,19 +55,19 @@ class Agent(BaseModel):
     name: str
     persona: str = ""
     kind: AgentKind = AgentKind.AI
-    model: str | None = None  # Falls back to the server default when None.
-    provider: str | None = None  # "anthropic" | "mock" | None (use server default).
+    model: str | None = None  # 为 None 时回退到服务端默认模型。
+    provider: str | None = None  # "anthropic" | "mock" | None（用服务端默认）。
     temperature: float = 0.8
     color: str = AGENT_COLORS[0]
     enabled: bool = True
-    # Runtime-only fields (not orchestration inputs); reset on load.
+    # 仅运行期使用的字段（不是编排输入）；加载时会重置。
     status: Literal["idle", "thinking", "speaking"] = "idle"
 
 
 class Message(BaseModel):
     id: str = Field(default_factory=lambda: _new_id("msg"))
     room_id: str
-    sender_id: str  # agent id, "human", or "system"
+    sender_id: str  # 智能体 id、"human" 或 "system"
     sender_name: str
     role: Literal["agent", "human", "system"] = "agent"
     content: str = ""
@@ -85,7 +85,7 @@ class Room(BaseModel):
     status: RoomStatus = RoomStatus.IDLE
     max_turns: int = 24
     turn_delay: float = 1.2
-    turn: int = 0  # Number of agent turns taken in the current run.
+    turn: int = 0  # 当前这一轮运行中已经进行的发言轮数。
 
 
 class AgentCreate(BaseModel):
@@ -129,4 +129,4 @@ class RoomUpdate(BaseModel):
 
 class HumanMessage(BaseModel):
     content: str
-    sender_name: str = "You"
+    sender_name: str = "你"

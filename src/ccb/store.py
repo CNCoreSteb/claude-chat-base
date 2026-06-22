@@ -1,9 +1,8 @@
-"""In-memory state store with append-only transcript persistence.
+"""内存状态存储 + 仅追加的对话记录持久化。
 
-State (agents, rooms, messages) lives in memory for speed and simplicity. Every
-message is also appended to a per-room JSONL transcript on disk, so conversations
-survive restarts and can be replayed or analyzed offline. This append-only design
-is robust and cross-platform (no database engine required).
+状态（智能体、房间、消息）保存在内存中以追求速度与简洁。每条消息同时会被
+追加写入按房间划分的 JSONL 文件，因此对话可在重启后保留，也能离线回放或分析。
+这种"仅追加"的设计稳健且跨平台（无需任何数据库引擎）。
 """
 
 from __future__ import annotations
@@ -22,9 +21,9 @@ class Store:
 
         self.agents: dict[str, Agent] = {}
         self.rooms: dict[str, Room] = {}
-        self.messages: dict[str, list[Message]] = {}  # room_id -> ordered messages
+        self.messages: dict[str, list[Message]] = {}  # room_id -> 有序消息列表
 
-    # ----- agents -------------------------------------------------------------
+    # ----- 智能体 -------------------------------------------------------------
 
     def add_agent(self, agent: Agent) -> Agent:
         self.agents[agent.id] = agent
@@ -39,7 +38,7 @@ class Store:
     def get_agent(self, agent_id: str) -> Agent | None:
         return self.agents.get(agent_id)
 
-    # ----- rooms --------------------------------------------------------------
+    # ----- 房间 --------------------------------------------------------------
 
     def add_room(self, room: Room) -> Room:
         self.rooms[room.id] = room
@@ -49,7 +48,7 @@ class Store:
     def get_room(self, room_id: str) -> Room | None:
         return self.rooms.get(room_id)
 
-    # ----- messages -----------------------------------------------------------
+    # ----- 消息 -----------------------------------------------------------
 
     def add_message(self, message: Message) -> Message:
         self.messages.setdefault(message.room_id, []).append(message)
@@ -60,7 +59,7 @@ class Store:
         return self.messages.get(room_id, [])
 
     def clear_messages(self, room_id: str) -> None:
-        """Reset a room's in-memory history (transcript file is kept)."""
+        """清空某个房间的内存历史（磁盘上的记录文件保留）。"""
         self.messages[room_id] = []
 
     def _transcript_path(self, room_id: str) -> Path:

@@ -1,8 +1,8 @@
-"""The Hub: the single source of truth and the event broadcaster.
+"""Hub：唯一的状态真相来源 + 事件广播器。
 
-The Hub owns the :class:`Store`, resolves LLM providers, and pushes events to all
-connected WebSocket clients. Every state change that the GUI cares about flows
-through one of the ``emit_*`` helpers so the UI stays in sync in real time.
+Hub 持有 :class:`Store`，负责解析 LLM 提供方，并把事件推送给所有已连接的
+WebSocket 客户端。所有 GUI 关心的状态变更都经由某个 ``*`` 辅助方法发出，从而让
+界面保持实时同步。
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from .models import (
 )
 from .store import Store
 
-log = logging.getLogger("agora.hub")
+log = logging.getLogger("ccb.hub")
 
 
 class Hub:
@@ -35,10 +35,10 @@ class Hub:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._providers: dict[str, LLMProvider] = {}
         self._warned_no_key = False
-        # Orchestrator is wired in after construction to avoid a circular import.
+        # 编排器在构造之后再注入，避免循环导入。
         self.orchestrator: Any | None = None
 
-    # ----- bootstrap ----------------------------------------------------------
+    # ----- 启动引导 ----------------------------------------------------------
 
     def load_presets(self) -> None:
         agents, rooms = load_preset(self.settings.preset, self.settings.default_model)
@@ -46,9 +46,9 @@ class Hub:
             self.store.add_agent(agent)
         for room in rooms:
             self.store.add_room(room)
-        log.info("Loaded %d agents and %d rooms from preset", len(agents), len(rooms))
+        log.info("已从预设加载 %d 个智能体、%d 个房间", len(agents), len(rooms))
 
-    # ----- providers ----------------------------------------------------------
+    # ----- 提供方 ----------------------------------------------------------
 
     def resolve_provider_name(self, agent: Agent) -> str:
         return agent.provider or self.settings.resolved_provider()
@@ -61,19 +61,19 @@ class Hub:
             key = self.settings.anthropic_api_key
             if not key:
                 if not self._warned_no_key:
-                    log.warning("No ANTHROPIC_API_KEY set; falling back to mock provider.")
+                    log.warning("未设置 ANTHROPIC API 密钥，回退到 mock 提供方。")
                     self._warned_no_key = True
                 return self.get_provider("mock")
             provider: LLMProvider = AnthropicProvider(key)
         elif name == "mock":
             provider = MockProvider()
         else:
-            raise ValueError(f"Unknown provider: {name}")
+            raise ValueError(f"未知的提供方：{name}")
 
         self._providers[name] = provider
         return provider
 
-    # ----- pub/sub ------------------------------------------------------------
+    # ----- 发布 / 订阅 --------------------------------------------------------
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
@@ -88,10 +88,10 @@ class Hub:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                # Slow client: drop it rather than blocking the whole room.
+                # 客户端太慢：直接丢弃它，而不是阻塞整个房间。
                 self._subscribers.discard(queue)
 
-    # ----- snapshot -----------------------------------------------------------
+    # ----- 快照 -----------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -109,16 +109,16 @@ class Hub:
             },
         }
 
-    # ----- agent operations ---------------------------------------------------
+    # ----- 智能体操作 ---------------------------------------------------------
 
     async def create_agent(self, data: AgentCreate) -> Agent:
         from .models import AGENT_COLORS
 
         payload = data.model_dump()
-        # color is optional on input; let the model default fill in when omitted.
+        # 输入里的 color 是可选的；省略时让模型默认值来填。
         color = payload.pop("color", None)
         agent = Agent(**payload)
-        # Assign the next palette color round-robin by current agent count.
+        # 按当前智能体数量在配色表里轮流取色。
         agent.color = color or AGENT_COLORS[len(self.store.agents) % len(AGENT_COLORS)]
         if agent.model is None:
             agent.model = self.settings.default_model
@@ -148,7 +148,7 @@ class Hub:
             {"type": "agent_status", "agent_id": agent_id, "status": status}
         )
 
-    # ----- room operations ----------------------------------------------------
+    # ----- 房间操作 ----------------------------------------------------------
 
     async def create_room(self, data: RoomCreate) -> Room:
         room = Room(**data.model_dump())
@@ -180,7 +180,7 @@ class Hub:
             }
         )
 
-    # ----- messages -----------------------------------------------------------
+    # ----- 消息 -----------------------------------------------------------
 
     async def post_message(self, message: Message) -> Message:
         self.store.add_message(message)

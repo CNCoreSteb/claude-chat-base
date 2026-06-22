@@ -1,4 +1,4 @@
-/* Agora GUI — a calm, focused dark theme built for watching conversations. */
+/* Claude Chat Base 界面 —— 一个沉稳、专注、适合"观看对话"的深色主题。 */
 
 :root {
   --bg: #0b0d12;
@@ -43,7 +43,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
   overflow: hidden;
 }
 
-/* ----- sidebars ----- */
+/* ----- 两侧边栏 ----- */
 .sidebar {
   background: var(--bg-elev);
   display: flex;
@@ -63,15 +63,14 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 }
 .brand__mark { font-size: 26px; }
 .brand__name { font-weight: 700; letter-spacing: 0.2px; }
-.brand__sub { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 1px; }
+.brand__sub { font-size: 12px; color: var(--text-faint); letter-spacing: 2px; }
 
 .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 18px 8px;
-  font-size: 11px;
-  text-transform: uppercase;
+  font-size: 12px;
   letter-spacing: 1px;
   color: var(--text-faint);
 }
@@ -88,7 +87,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 }
 .icon-btn:hover { border-color: var(--accent); color: var(--text); }
 
-/* ----- room list ----- */
+/* ----- 房间列表 ----- */
 .room-list, .agent-list { list-style: none; margin: 0; padding: 4px 10px; }
 
 .room-item {
@@ -101,7 +100,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 .room-item:hover { background: var(--bg-elev-2); }
 .room-item.active { background: var(--accent-soft); border-color: var(--accent); }
 .room-item__name { font-weight: 600; }
-.room-item__meta { font-size: 11px; color: var(--text-faint); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+.room-item__meta { font-size: 12px; color: var(--text-faint); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; background: var(--text-faint); }
 .dot.running { background: var(--good); box-shadow: 0 0 8px var(--good); animation: pulse 1.4s infinite; }
@@ -115,14 +114,14 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
   border-radius: var(--radius-sm);
   font-size: 12px;
   color: var(--text-dim);
-  line-height: 1.7;
+  line-height: 1.8;
 }
 .server-card b { color: var(--text); font-weight: 600; }
-.badge { padding: 1px 7px; border-radius: 20px; font-size: 11px; border: 1px solid var(--line); }
+.badge { padding: 1px 7px; border-radius: 20px; font-size: 12px; border: 1px solid var(--line); }
 .badge.mock { color: var(--warn); border-color: var(--warn); }
 .badge.anthropic { color: var(--good); border-color: var(--good); }
 
-/* ----- chat ----- */
+/* ----- 对话区 ----- */
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 
 .chat__header {
@@ -157,7 +156,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 .btn--ghost { background: transparent; }
 .btn--danger:hover { border-color: var(--danger); color: var(--danger); }
 
-/* ----- transcript ----- */
+/* ----- 对话记录 ----- */
 .transcript {
   flex: 1;
   overflow-y: auto;
@@ -177,7 +176,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
   display: grid;
   place-items: center;
   font-weight: 700;
-  font-size: 13px;
+  font-size: 14px;
   color: #0b0d12;
   flex-shrink: 0;
 }
@@ -191,7 +190,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
   border: 1px solid var(--line-soft);
   padding: 10px 14px;
   border-radius: 4px 12px 12px 12px;
-  line-height: 1.6;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-wrap: break-word;
 }
@@ -222,7 +221,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 }
 .empty-state__icon { font-size: 42px; margin-bottom: 10px; }
 
-/* ----- composer ----- */
+/* ----- 输入框 ----- */
 .composer {
   display: flex;
   gap: 10px;
@@ -242,7 +241,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 }
 .composer textarea:focus { outline: none; border-color: var(--accent); }
 
-/* ----- agents ----- */
+/* ----- 智能体 ----- */
 .agent-item {
   display: flex;
   align-items: center;
@@ -253,7 +252,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 .agent-item:hover { background: var(--bg-elev-2); }
 .agent-item__info { flex: 1; min-width: 0; }
 .agent-item__name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.agent-item__status { font-size: 11px; color: var(--text-faint); }
+.agent-item__status { font-size: 12px; color: var(--text-faint); }
 .agent-item__status.thinking { color: var(--warn); }
 .agent-item__status.speaking { color: var(--good); }
 .agent-item.disabled { opacity: 0.45; }
@@ -269,7 +268,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 .add-existing { padding: 4px 14px 18px; display: flex; flex-direction: column; gap: 6px; }
 .add-existing select { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px; }
 
-/* ----- modal ----- */
+/* ----- 弹窗 ----- */
 .modal-backdrop {
   position: fixed; inset: 0;
   background: rgba(0, 0, 0, 0.6);
@@ -303,7 +302,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
 .swatch-pick { width: 24px; height: 24px; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
 .swatch-pick.sel { border-color: var(--text); }
 
-/* ----- toast ----- */
+/* ----- 轻提示 ----- */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--bg-elev-2); border: 1px solid var(--line);
@@ -311,7 +310,7 @@ button, textarea, input, select { font-family: inherit; font-size: inherit; colo
   z-index: 60; font-size: 13px;
 }
 
-/* scrollbars */
+/* 滚动条 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }

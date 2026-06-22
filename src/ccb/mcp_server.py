@@ -1,11 +1,11 @@
-"""MCP bridge: let an external Claude Code instance join an Agora room as a peer.
+"""MCP 桥接：让一个外部的 Claude Code 实例以 peer 身份加入 CCB 房间。
 
-Run this as a stdio MCP server from any Claude Code session (see docs). It talks to
-a running Agora HTTP server, so the peer's messages appear live in the GUI alongside
-the AI agents — bridging the "claude-peers" idea into the group-chat GUI.
+把它作为一个 stdio MCP 服务从任意 Claude Code 会话中运行（见文档）。它会与正在运行
+的 CCB HTTP 服务通信，因此该 peer 的发言会和 AI 智能体一起实时出现在 GUI 中——把
+"claude-peers"的点子接入到群聊 GUI 里。
 
-Register it (after `uv sync --extra mcp`) with, e.g.:
-    claude mcp add --transport stdio agora -- uv run agora-mcp
+注册方式（先执行 `uv sync --extra mcp`），例如：
+    claude mcp add --transport stdio ccb -- uv run ccb-mcp
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ import sys
 
 import httpx
 
-BASE_URL = os.environ.get("AGORA_URL", "http://127.0.0.1:8800").rstrip("/")
+BASE_URL = os.environ.get("CCB_URL", "http://127.0.0.1:8800").rstrip("/")
 
-# Per-session state (one MCP server process per Claude Code session).
+# 每个会话的状态（每个 Claude Code 会话对应一个 MCP 服务进程）。
 _session: dict[str, object] = {"room_id": None, "agent_id": None, "name": None, "last_ts": 0.0}
 
 
@@ -25,35 +25,35 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=BASE_URL, timeout=15.0)
 
 
-def build_server():  # noqa: ANN201 - returns a FastMCP instance
+def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     try:
         from mcp.server.fastmcp import FastMCP
-    except ImportError as exc:  # pragma: no cover - guidance path
+    except ImportError as exc:  # pragma: no cover - 提示路径
         raise SystemExit(
-            "The 'mcp' package is required for the peer bridge.\n"
-            "Install it with:  uv sync --extra mcp\n"
+            "peer 桥接需要安装 'mcp' 包。\n"
+            "请执行：  uv sync --extra mcp\n"
         ) from exc
 
-    mcp = FastMCP("agora-peers")
+    mcp = FastMCP("ccb-peers")
 
     @mcp.tool()
     async def list_rooms() -> str:
-        """List the chat rooms available on the Agora server."""
+        """列出 CCB 服务上可用的聊天房间。"""
         async with _client() as c:
             state = (await c.get("/api/state")).json()
         rooms = state.get("rooms", [])
         if not rooms:
-            return "No rooms exist yet. Ask the host to create one in the GUI."
+            return "目前还没有房间。请在 GUI 里创建一个。"
         return "\n".join(
-            f"- {r['name']} (id={r['id']}, {len(r['agent_ids'])} participants, {r['status']})"
-            f"\n    topic: {r.get('topic', '')}"
+            f"- {r['name']}（id={r['id']}，{len(r['agent_ids'])} 名参与者，{r['status']}）"
+            f"\n    话题：{r.get('topic', '')}"
             for r in rooms
         )
 
     @mcp.tool()
     async def join_room(room: str, name: str, persona: str = "") -> str:
-        """Join a room as a peer. `room` may be a room id or its name. `name` is your
-        display name in the chat. Returns confirmation. Call this before sending."""
+        """以 peer 身份加入房间。`room` 可以是房间 id 或名字，`name` 是你在聊天中的
+        显示名。返回确认信息。发言前请先调用本工具。"""
         async with _client() as c:
             state = (await c.get("/api/state")).json()
             match = next(
@@ -61,7 +61,7 @@ def build_server():  # noqa: ANN201 - returns a FastMCP instance
                 None,
             )
             if not match:
-                return f"Room '{room}' not found. Use list_rooms to see options."
+                return f"未找到房间「{room}」。可用 list_rooms 查看可选项。"
             resp = await c.post(
                 "/api/peers",
                 json={"room_id": match["id"], "name": name, "persona": persona},
@@ -71,26 +71,26 @@ def build_server():  # noqa: ANN201 - returns a FastMCP instance
         _session.update(
             room_id=data["room_id"], agent_id=data["agent_id"], name=name, last_ts=0.0
         )
-        return f"Joined '{match['name']}' as '{name}'. You now appear in the GUI."
+        return f"已以「{name}」身份加入「{match['name']}」。你现在会出现在 GUI 中。"
 
     @mcp.tool()
     async def send_message(content: str) -> str:
-        """Post a message to the room you joined. Everyone (and the GUI) sees it instantly."""
+        """向你加入的房间发一条消息。所有人（以及 GUI）会即时看到。"""
         if not _session["room_id"]:
-            return "Join a room first with join_room."
+            return "请先用 join_room 加入一个房间。"
         async with _client() as c:
             resp = await c.post(
                 f"/api/rooms/{_session['room_id']}/messages",
                 json={"content": content, "agent_id": _session["agent_id"]},
             )
             resp.raise_for_status()
-        return "Message sent."
+        return "消息已发送。"
 
     @mcp.tool()
     async def read_messages() -> str:
-        """Read messages posted since your last read (poll this to follow the chat)."""
+        """读取你上次读取之后的新消息（轮询本工具即可跟上聊天进度）。"""
         if not _session["room_id"]:
-            return "Join a room first with join_room."
+            return "请先用 join_room 加入一个房间。"
         async with _client() as c:
             resp = await c.get(
                 f"/api/rooms/{_session['room_id']}/messages",
@@ -99,31 +99,31 @@ def build_server():  # noqa: ANN201 - returns a FastMCP instance
             resp.raise_for_status()
             msgs = resp.json()
         if not msgs:
-            return "(no new messages)"
+            return "（没有新消息）"
         _session["last_ts"] = max(m["ts"] for m in msgs)
         lines = []
         for m in msgs:
-            me = " (you)" if m["sender_id"] == _session["agent_id"] else ""
+            me = "（你）" if m["sender_id"] == _session["agent_id"] else ""
             lines.append(f"{m['sender_name']}{me}: {m['content']}")
         return "\n".join(lines)
 
     @mcp.tool()
     async def list_peers() -> str:
-        """List the participants currently in your room."""
+        """列出当前房间里的参与者。"""
         if not _session["room_id"]:
-            return "Join a room first with join_room."
+            return "请先用 join_room 加入一个房间。"
         async with _client() as c:
             state = (await c.get("/api/state")).json()
         room = next((r for r in state["rooms"] if r["id"] == _session["room_id"]), None)
         if not room:
-            return "Your room no longer exists."
+            return "你所在的房间已不存在。"
         agents = {a["id"]: a for a in state["agents"]}
         out = []
         for aid in room["agent_ids"]:
             a = agents.get(aid)
             if a:
-                out.append(f"- {a['name']} ({a['kind']}, {a['status']})")
-        return "\n".join(out) or "(no participants)"
+                out.append(f"- {a['name']}（{a['kind']}，{a['status']}）")
+        return "\n".join(out) or "（没有参与者）"
 
     return mcp
 

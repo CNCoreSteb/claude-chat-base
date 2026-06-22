@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from agora.config import Settings
-from agora.hub import Hub
-from agora.models import Agent, Room, Strategy
-from agora.orchestrator import Orchestrator
+from ccb.config import Settings
+from ccb.hub import Hub
+from ccb.models import Agent, Room, Strategy
+from ccb.orchestrator import Orchestrator
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    # Force the offline provider so tests never touch the network.
+    # 强制使用离线提供方，确保测试永不触网。
     return Settings(provider="mock", anthropic_api_key=None, data_dir=tmp_path / "data")
 
 
@@ -25,11 +25,11 @@ def hub(settings: Settings) -> Hub:
 
 @pytest.fixture
 def populated_hub(hub: Hub) -> Hub:
-    a = hub.store.add_agent(Agent(name="Ada", persona="You are Ada, an engineer."))
-    b = hub.store.add_agent(Agent(name="Theo", persona="You are Theo, a designer."))
+    a = hub.store.add_agent(Agent(name="阿工", persona="你是阿工，一名工程师。"))
+    b = hub.store.add_agent(Agent(name="小设", persona="你是小设，一名设计师。"))
     room = Room(
-        name="Test Room",
-        topic="Decide on a logo.",
+        name="测试房间",
+        topic="确定一个图标方案。",
         agent_ids=[a.id, b.id],
         strategy=Strategy.ROUND_ROBIN,
         max_turns=4,

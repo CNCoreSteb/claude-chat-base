@@ -10,8 +10,8 @@ dist/
 .venv/
 venv/
 
-# Agora runtime data (transcripts, room state)
-.agora/
+# CCB runtime data (transcripts, room state)
+.ccb/
 data/
 
 # Environment

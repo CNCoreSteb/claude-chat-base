@@ -1,15 +1,15 @@
-# Agora launcher for Windows (PowerShell). Bootstraps uv if missing, then starts the GUI.
+# Claude Chat Base 启动脚本（Windows / PowerShell）。如未安装 uv 会先自动安装，然后启动 GUI。
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-    Write-Host "uv not found — installing it (https://docs.astral.sh/uv/)..."
+    Write-Host "未找到 uv —— 正在安装（https://docs.astral.sh/uv/）..."
     powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 }
 
-# Sync dependencies (uv auto-downloads a suitable Python if needed).
+# 同步依赖（uv 会在需要时自动下载合适的 Python）。
 uv sync
 
-Write-Host "Starting Agora...  (Ctrl+C to stop)"
-uv run agora @args
+Write-Host "正在启动 Claude Chat Base...（Ctrl+C 退出）"
+uv run ccb @args

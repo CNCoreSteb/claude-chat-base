@@ -1,8 +1,8 @@
-"""Runtime configuration and preset loading.
+"""运行期配置与预设加载。
 
-Settings come from environment variables (prefix ``AGORA_``) and an optional
-``.env`` file. Presets — the initial agents and rooms a fresh server starts with —
-are loaded from a TOML file so users can curate their own casts without touching code.
+配置来自环境变量（前缀 ``CCB_``）以及可选的 ``.env`` 文件。预设——即服务端
+全新启动时的初始智能体与房间——从一个 TOML 文件加载，这样用户无需改动代码就能
+定制自己的"演员阵容"。
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ DEFAULT_PRESET = PACKAGE_DIR / "presets" / "default.toml"
 
 
 class Settings(BaseSettings):
-    """Server configuration, overridable via env (``AGORA_*``) or ``.env``."""
+    """服务端配置，可通过环境变量（``CCB_*``）或 ``.env`` 覆盖。"""
 
     model_config = SettingsConfigDict(
-        env_prefix="AGORA_",
+        env_prefix="CCB_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
@@ -34,28 +34,28 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     default_model: str = "claude-sonnet-4-6"
     director_model: str = "claude-haiku-4-5-20251001"
-    # "auto" picks anthropic when a key is present, otherwise the mock provider.
+    # "auto" 在有密钥时选 anthropic，否则选 mock 提供方。
     provider: str = "auto"
 
     turn_delay: float = 1.2
     max_turns: int = 24
-    max_tokens: int = 600  # Per agent message; keeps chat snappy and cheap.
+    max_tokens: int = 600  # 每条智能体消息的上限；让对话保持简短、省钱。
 
-    data_dir: Path = Path(".agora")
+    data_dir: Path = Path(".ccb")
     preset: Path = DEFAULT_PRESET
     open_browser: bool = True
 
     def resolved_provider(self) -> str:
-        """Return the concrete provider name to use by default."""
+        """返回默认实际使用的提供方名称。"""
         if self.provider != "auto":
             return self.provider
         return "anthropic" if self.anthropic_api_key else "mock"
 
 
 def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]]:
-    """Load agents and rooms from a TOML preset file.
+    """从 TOML 预设文件加载智能体与房间。
 
-    Returns empty lists if the file does not exist so the server can still boot.
+    若文件不存在则返回两个空列表，以保证服务端仍可正常启动。
     """
     if not path.exists():
         return [], []
@@ -80,7 +80,7 @@ def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]
 
     rooms: list[Room] = []
     for raw in data.get("rooms", []):
-        # Rooms reference agents by name in the preset for readability.
+        # 预设里房间通过名字引用智能体，便于阅读。
         ids = [name_to_id[n] for n in raw.get("agents", []) if n in name_to_id]
         rooms.append(
             Room(

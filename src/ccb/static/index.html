@@ -1,40 +1,39 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agora — Agent Group Chat</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <title>Claude Chat Base —— 智能体群聊</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗣️</text></svg>" />
 </head>
 <body>
   <div id="app" class="app">
-    <!-- Left: rooms -->
+    <!-- 左侧：房间 -->
     <aside class="sidebar sidebar--left">
       <div class="brand">
         <span class="brand__mark">🗣️</span>
         <div>
-          <div class="brand__name">Agora</div>
-          <div class="brand__sub">agent group chat</div>
+          <div class="brand__name">Claude Chat Base</div>
+          <div class="brand__sub">智能体群聊</div>
         </div>
       </div>
 
       <div class="panel-head">
-        <span>Rooms</span>
-        <button class="icon-btn" id="new-room-btn" title="New room">＋</button>
+        <span>房间</span>
+        <button class="icon-btn" id="new-room-btn" title="新建房间">＋</button>
       </div>
       <ul class="room-list" id="room-list"></ul>
 
       <div class="server-card" id="server-card"></div>
     </aside>
 
-    <!-- Center: conversation -->
+    <!-- 中间：对话 -->
     <main class="chat">
       <header class="chat__header" id="chat-header">
         <div class="chat__title">
-          <h1 id="room-name">No room selected</h1>
+          <h1 id="room-name">未选择房间</h1>
           <p id="room-topic" class="chat__topic"></p>
         </div>
         <div class="chat__controls" id="chat-controls"></div>
@@ -43,43 +42,43 @@
       <div class="transcript" id="transcript">
         <div class="empty-state" id="empty-state">
           <div class="empty-state__icon">💬</div>
-          <p>Select a room and press <strong>Start</strong> to watch the agents talk.</p>
+          <p>选择一个房间并点击<strong>开始</strong>，观看智能体们对话。</p>
         </div>
       </div>
 
       <footer class="composer">
         <textarea id="composer-input" rows="1"
-          placeholder="Interject as a human… use @Name to nominate the next speaker. (Enter to send)"></textarea>
-        <button class="btn btn--primary" id="send-btn">Send</button>
+          placeholder="以人类身份插话…… 用 @名字 指定下一个发言者。（回车发送）"></textarea>
+        <button class="btn btn--primary" id="send-btn">发送</button>
       </footer>
     </main>
 
-    <!-- Right: participants -->
+    <!-- 右侧：参与者 -->
     <aside class="sidebar sidebar--right">
       <div class="panel-head">
-        <span>Participants</span>
-        <button class="icon-btn" id="add-agent-btn" title="Add agent">＋</button>
+        <span>参与者</span>
+        <button class="icon-btn" id="add-agent-btn" title="新增智能体">＋</button>
       </div>
       <ul class="agent-list" id="agent-list"></ul>
 
       <div class="panel-head">
-        <span>Add existing</span>
+        <span>添加已有</span>
       </div>
       <div class="add-existing" id="add-existing"></div>
     </aside>
   </div>
 
-  <!-- Modal scaffold -->
+  <!-- 弹窗骨架 -->
   <div class="modal-backdrop" id="modal-backdrop" hidden>
     <div class="modal" id="modal">
       <div class="modal__head">
-        <h2 id="modal-title">Title</h2>
+        <h2 id="modal-title">标题</h2>
         <button class="icon-btn" id="modal-close">✕</button>
       </div>
       <div class="modal__body" id="modal-body"></div>
       <div class="modal__foot">
-        <button class="btn" id="modal-cancel">Cancel</button>
-        <button class="btn btn--primary" id="modal-ok">Save</button>
+        <button class="btn" id="modal-cancel">取消</button>
+        <button class="btn btn--primary" id="modal-ok">保存</button>
       </div>
     </div>
   </div>

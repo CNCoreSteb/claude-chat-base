@@ -4,8 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from agora.config import Settings
-from agora.server import create_app
+from ccb.config import Settings
+from ccb.server import create_app
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -13,7 +13,7 @@ def _client(tmp_path: Path) -> TestClient:
         provider="mock",
         anthropic_api_key=None,
         data_dir=tmp_path / "data",
-        preset=Path("does-not-exist.toml"),  # start empty for a clean test
+        preset=Path("does-not-exist.toml"),  # 以空状态启动，便于干净地测试
         open_browser=False,
     )
     return TestClient(create_app(settings))
@@ -30,17 +30,17 @@ def test_health_and_state(tmp_path):
 
 def test_agent_room_message_flow(tmp_path):
     with _client(tmp_path) as client:
-        agent = client.post("/api/agents", json={"name": "Ada", "persona": "engineer"}).json()
-        room = client.post("/api/rooms", json={"name": "R", "topic": "t"}).json()
+        agent = client.post("/api/agents", json={"name": "阿工", "persona": "工程师"}).json()
+        room = client.post("/api/rooms", json={"name": "房间", "topic": "话题"}).json()
         client.post(f"/api/rooms/{room['id']}/agents/{agent['id']}")
 
         posted = client.post(
-            f"/api/rooms/{room['id']}/messages", json={"content": "hello team"}
+            f"/api/rooms/{room['id']}/messages", json={"content": "大家好"}
         ).json()
         assert posted["role"] == "human"
 
         msgs = client.get(f"/api/rooms/{room['id']}/messages").json()
-        assert [m["content"] for m in msgs] == ["hello team"]
+        assert [m["content"] for m in msgs] == ["大家好"]
 
         state = client.get("/api/state").json()
         room_state = next(r for r in state["rooms"] if r["id"] == room["id"])
@@ -49,7 +49,7 @@ def test_agent_room_message_flow(tmp_path):
 
 def test_peer_registration(tmp_path):
     with _client(tmp_path) as client:
-        room = client.post("/api/rooms", json={"name": "R"}).json()
+        room = client.post("/api/rooms", json={"name": "房间"}).json()
         peer = client.post(
             "/api/peers", json={"room_id": room["id"], "name": "ClaudeX", "persona": "peer"}
         ).json()
@@ -64,8 +64,8 @@ def test_websocket_receives_snapshot_and_events(tmp_path):
         with client.websocket_connect("/ws") as ws:
             snapshot = ws.receive_json()
             assert snapshot["type"] == "snapshot"
-            client.post("/api/rooms", json={"name": "Live"})
-            # The room creation should be broadcast to the socket.
+            client.post("/api/rooms", json={"name": "实时房间"})
+            # 创建房间应被广播到该 socket。
             event = ws.receive_json()
             assert event["type"] == "room_added"
-            assert event["room"]["name"] == "Live"
+            assert event["room"]["name"] == "实时房间"

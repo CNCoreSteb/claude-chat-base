@@ -1,9 +1,8 @@
-"""The Orchestrator: runs a live conversation loop per room.
+"""编排器：为每个房间运行一条实时对话循环。
 
-For each running room an asyncio task repeatedly: (1) picks the next speaker via the
-configured strategy, (2) streams that agent's message token-by-token to the GUI, and
-(3) waits a beat before the next turn. Humans can interject at any time and "@mention"
-an agent to nominate who speaks next.
+对每个"运行中"的房间，会有一个 asyncio 任务不断地：(1) 按所配置的策略挑选下一个
+发言者，(2) 把该智能体的发言逐字流式推送给 GUI，(3) 稍作停顿再进入下一轮。
+人类可以随时插话，并用「@名字」来提名下一个发言者。
 """
 
 from __future__ import annotations
@@ -14,17 +13,17 @@ import logging
 from . import prompting
 from .models import Agent, AgentKind, Message, Room, RoomStatus, Strategy
 
-log = logging.getLogger("agora.orchestrator")
+log = logging.getLogger("ccb.orchestrator")
 
 
 class Orchestrator:
-    def __init__(self, hub) -> None:  # noqa: ANN001 - avoid circular import typing
+    def __init__(self, hub) -> None:  # noqa: ANN001 - 避免循环导入造成的类型标注
         self.hub = hub
         self._tasks: dict[str, asyncio.Task] = {}
         self._rr_index: dict[str, int] = {}
         self._next_hint: dict[str, str] = {}
 
-    # ----- lifecycle ----------------------------------------------------------
+    # ----- 生命周期 ----------------------------------------------------------
 
     async def start(self, room_id: str) -> None:
         room = self.hub.store.get_room(room_id)
@@ -51,7 +50,7 @@ class Orchestrator:
             task.cancel()
 
     def hint_next(self, room_id: str, agent_id: str) -> None:
-        """Nominate the next speaker (used by @mentions in human messages)."""
+        """提名下一个发言者（供人类消息里的 @提及 使用）。"""
         self._next_hint[room_id] = agent_id
 
     async def shutdown(self) -> None:
@@ -59,7 +58,7 @@ class Orchestrator:
             task.cancel()
         self._tasks.clear()
 
-    # ----- main loop ----------------------------------------------------------
+    # ----- 主循环 ----------------------------------------------------------
 
     async def _run(self, room_id: str) -> None:
         try:
@@ -71,13 +70,13 @@ class Orchestrator:
                     await asyncio.sleep(0.2)
                     continue
                 if room.turn >= room.max_turns:
-                    await self._system(room, "Reached the turn limit for this run.")
+                    await self._system(room, "已达到本轮运行的发言上限。")
                     await self.hub.set_room_status(room_id, RoomStatus.IDLE)
                     break
 
                 speaker = await self._pick_speaker(room)
                 if speaker is None:
-                    await self._system(room, "The moderator wrapped up the discussion.")
+                    await self._system(room, "主持人结束了本次讨论。")
                     await self.hub.set_room_status(room_id, RoomStatus.IDLE)
                     break
 
@@ -87,16 +86,16 @@ class Orchestrator:
                 await self._interruptible_sleep(room.turn_delay, room_id)
         except asyncio.CancelledError:
             pass
-        except Exception:  # noqa: BLE001 - surface unexpected loop failures to the GUI
-            log.exception("Conversation loop crashed for room %s", room_id)
+        except Exception:  # noqa: BLE001 - 把意料之外的循环错误暴露给 GUI
+            log.exception("房间 %s 的对话循环崩溃", room_id)
             room = self.hub.store.get_room(room_id)
             if room:
-                await self._system(room, "The conversation loop hit an error and stopped.")
+                await self._system(room, "对话循环发生错误，已停止。")
                 await self.hub.set_room_status(room_id, RoomStatus.IDLE)
         finally:
             self._tasks.pop(room_id, None)
 
-    # ----- speaker selection --------------------------------------------------
+    # ----- 发言者选择 --------------------------------------------------------
 
     def _eligible_ai_agents(self, room: Room) -> list[Agent]:
         agents = []
@@ -124,7 +123,7 @@ class Orchestrator:
             chosen = await self._director_pick(room, eligible)
             if chosen is not None:
                 return chosen
-            # Fall through to round-robin when the director is unavailable/unclear.
+            # 主持人不可用 / 无法解析时，落到轮流策略。
 
         return self._round_robin_pick(room, eligible)
 
@@ -146,19 +145,19 @@ class Orchestrator:
                 temperature=0.2,
                 max_tokens=12,
             )
-        except Exception:  # noqa: BLE001 - director is best-effort; degrade gracefully
-            log.exception("Director call failed; using round-robin")
+        except Exception:  # noqa: BLE001 - 主持人尽力而为，失败时优雅降级
+            log.exception("主持人调用失败，改用轮流策略")
             return None
 
         text = raw.strip().lower()
-        if "done" in text.split() or text == "done":
+        if "done" in text.split() or text == "done" or "结束" in raw:
             return None
         for agent in eligible:
             if agent.name.lower() in text:
                 return agent
-        return None  # Unparseable -> caller falls back to round-robin.
+        return None  # 无法解析 -> 由调用方落到轮流策略。
 
-    # ----- a single agent turn ------------------------------------------------
+    # ----- 单个智能体的一轮发言 -----------------------------------------------
 
     async def _agent_turn(self, room: Room, agent: Agent) -> None:
         provider_name = self.hub.resolve_provider_name(agent)
@@ -195,8 +194,8 @@ class Orchestrator:
                     {"type": "message_delta", "message_id": message.id, "delta": delta}
                 )
         except Exception:  # noqa: BLE001
-            log.exception("Agent %s failed to generate", agent.name)
-            chunks.append("…(failed to respond)")
+            log.exception("智能体 %s 生成失败", agent.name)
+            chunks.append("……（回复失败）")
 
         message.content = _clean(("".join(chunks)).strip(), agent.name)
         self.hub.store.add_message(message)
@@ -219,8 +218,8 @@ class Orchestrator:
 
 
 def _clean(text: str, name: str) -> str:
-    """Strip an accidental leading 'Name:' prefix the model may add."""
-    prefix = f"{name}:"
-    if text.lower().startswith(prefix.lower()):
-        text = text[len(prefix):].lstrip()
-    return text or "…"
+    """去掉模型可能误加的开头"名字:"前缀。"""
+    for prefix in (f"{name}:", f"{name}："):
+        if text.startswith(prefix):
+            text = text[len(prefix):].lstrip()
+    return text or "……"

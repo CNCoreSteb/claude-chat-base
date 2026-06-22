@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agora — Agent Group Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗣️</text></svg>" />
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- Left: rooms -->
+    <aside class="sidebar sidebar--left">
+      <div class="brand">
+        <span class="brand__mark">🗣️</span>
+        <div>
+          <div class="brand__name">Agora</div>
+          <div class="brand__sub">agent group chat</div>
+        </div>
+      </div>
+
+      <div class="panel-head">
+        <span>Rooms</span>
+        <button class="icon-btn" id="new-room-btn" title="New room">＋</button>
+      </div>
+      <ul class="room-list" id="room-list"></ul>
+
+      <div class="server-card" id="server-card"></div>
+    </aside>
+
+    <!-- Center: conversation -->
+    <main class="chat">
+      <header class="chat__header" id="chat-header">
+        <div class="chat__title">
+          <h1 id="room-name">No room selected</h1>
+          <p id="room-topic" class="chat__topic"></p>
+        </div>
+        <div class="chat__controls" id="chat-controls"></div>
+      </header>
+
+      <div class="transcript" id="transcript">
+        <div class="empty-state" id="empty-state">
+          <div class="empty-state__icon">💬</div>
+          <p>Select a room and press <strong>Start</strong> to watch the agents talk.</p>
+        </div>
+      </div>
+
+      <footer class="composer">
+        <textarea id="composer-input" rows="1"
+          placeholder="Interject as a human… use @Name to nominate the next speaker. (Enter to send)"></textarea>
+        <button class="btn btn--primary" id="send-btn">Send</button>
+      </footer>
+    </main>
+
+    <!-- Right: participants -->
+    <aside class="sidebar sidebar--right">
+      <div class="panel-head">
+        <span>Participants</span>
+        <button class="icon-btn" id="add-agent-btn" title="Add agent">＋</button>
+      </div>
+      <ul class="agent-list" id="agent-list"></ul>
+
+      <div class="panel-head">
+        <span>Add existing</span>
+      </div>
+      <div class="add-existing" id="add-existing"></div>
+    </aside>
+  </div>
+
+  <!-- Modal scaffold -->
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal" id="modal">
+      <div class="modal__head">
+        <h2 id="modal-title">Title</h2>
+        <button class="icon-btn" id="modal-close">✕</button>
+      </div>
+      <div class="modal__body" id="modal-body"></div>
+      <div class="modal__foot">
+        <button class="btn" id="modal-cancel">Cancel</button>
+        <button class="btn btn--primary" id="modal-ok">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

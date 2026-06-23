@@ -29,6 +29,8 @@ HEARTBEAT_INTERVAL = 15.0  # 秒；由桥接进程后台发送，与 LLM 无关�
 _session: dict[str, object] = {
     "agent_id": None, "name": None, "role": "", "active_room": None,
     "last_ts": 0.0, "kicked": False,
+    # 最近见过的消息 id → 所在主题 id；用于 reply_to 精确路由（缺省回到被回消息所在主题）。
+    "msg_rooms": {},
 }
 
 
@@ -269,10 +271,15 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         务必带上，好让对方在一堆「收到」里认出你在回应哪条。所有成员与 GUI 即时可见。"""
         if not _session["agent_id"]:
             return "请先 connect / join_room。"
+        # 路由优先级：显式 topic > 被回消息所在主题（reply_to）> 当前主题。
+        room_ref = topic
+        if not room_ref and reply_to:
+            room_ref = _session.get("msg_rooms", {}).get(reply_to)  # type: ignore[union-attr]
+        if not room_ref:
+            room_ref = _session.get("active_room")
+        if not room_ref:
+            return "没有当前主题，请用 topic 指定，或先 join_room/create_topic。"
         async with _client() as c:
-            room_ref = topic or _session.get("active_room")
-            if not room_ref:
-                return "没有当前主题，请用 topic 指定，或先 join_room/create_topic。"
             match = await _resolve_room(c, room_ref)
             if not match:
                 return f"未找到主题「{room_ref}」。"
@@ -374,6 +381,18 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         if not msgs:
             return "（没有新消息）"
         _session["last_ts"] = max(m["ts"] for m in msgs)
+        # 记录 id→主题；并让"当前主题"跟随最近一条非自己的消息——修复被 invite 进新主题后，
+        # 回复缺省漏回大厅（active_room 卡在 standby 的主题）的问题。
+        rooms_map: dict = _session.setdefault("msg_rooms", {})  # type: ignore[assignment]
+        for m in msgs:
+            if m.get("room_id"):
+                rooms_map[m["id"]] = m["room_id"]
+        if len(rooms_map) > 500:
+            for k in list(rooms_map)[:-250]:
+                del rooms_map[k]
+        incoming = [m for m in msgs if m["sender_id"] != aid and m.get("room_id")]
+        if incoming:
+            _session["active_room"] = incoming[-1]["room_id"]
         lines = []
         mentioned_any = False
         for m in msgs:

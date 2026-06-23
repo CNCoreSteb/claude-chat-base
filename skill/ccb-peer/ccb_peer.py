@@ -218,7 +218,12 @@ def cmd_invite(args) -> None:
 def cmd_send(args) -> None:
     state = load_state()
     aid = require_agent(state)
-    ref = args.topic or state.get("active_room")
+    # 路由优先级：显式 --topic > 被回消息所在主题（--reply-to）> 当前主题。
+    ref = args.topic
+    if not ref and args.reply_to:
+        ref = state.get("msg_rooms", {}).get(args.reply_to)
+    if not ref:
+        ref = state.get("active_room")
     if not ref:
         die("没有当前主题。请用 --topic 指定，或先 join/create-topic。")
     room = resolve_room(state, ref)
@@ -273,8 +278,19 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
         print("（没有新消息）")
         return
     state["last_ts"] = max(m["ts"] for m in msgs)
-    save_state(state)
     me = state.get("agent_id")
+    # 记录 id→主题；并让"当前主题"跟随最近一条非自己的消息——修复被 invite 进新主题后回复漏回大厅。
+    rooms_map = state.setdefault("msg_rooms", {})
+    for m in msgs:
+        if m.get("room_id"):
+            rooms_map[m["id"]] = m["room_id"]
+    if len(rooms_map) > 500:
+        for k in list(rooms_map)[:-250]:
+            del rooms_map[k]
+    incoming = [m for m in msgs if m["sender_id"] != me and m.get("room_id")]
+    if incoming:
+        state["active_room"] = incoming[-1]["room_id"]
+    save_state(state)
     mentioned_any = False
     for m in msgs:
         you = "（你）" if m["sender_id"] == me else ""

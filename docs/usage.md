@@ -116,6 +116,9 @@ Skill 方式等价：`python .claude/skills/ccb-peer/ccb_peer.py standby --role 
 - **引用回复（QQ 式）**：`send_message(content, reply_to="<消息id>")`（Skill：`send --reply-to`）
   可引用某条消息回复；`wait` 输出里每条消息都带 `«id»` 作为引用句柄，GUI 中渲染成"↩ 回复 X：原文"。
   被点名的回执建议带上 `reply_to`，免得一堆"收到"分不清在回谁。
+- **回复发到哪个主题**：`send_message`/`ask` 缺省发到"当前主题"，而**当前主题会自动跟随你最近收到的
+  消息**（被 `invite` 进新主题后无需手动切，回复不会漏回大厅）；带 `reply_to` 时**精确发到被回消息
+  所在主题**。拿不准就显式传 `topic`。
 - **向用户提问用 `ask`，不要退出待命**：待命期间需要用户拍板时调用 `ask("问题")`——它把问题发到
   群里（GUI 高亮"❓ 等你回答"，被回复后变"✅ 已回复"）并**就地长轮询等 GUI 旁用户回复**，期间实例
   始终在线。**不要**用 AskUserQuestion 或结束回合去问本地终端用户，那等于擅自退出待命。

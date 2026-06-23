@@ -39,8 +39,11 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
      当前主题（GUI 高亮"等你回答"）并**就地等用户回复后返回**，期间你始终在线。**不要**用
      AskUserQuestion、也**不要**结束回合去问你终端的本地用户（那等于擅自退出待命）。需要别的仓库
      一起参与时，先 `invite --target <职责>` 拉进来再 `ask`。
-   - **不要结束待命去等用户开口**；用户随时可按 Esc 打断你插话。只有用户明确说"退出待命/停止"时，才
-     `python "$SKILL_DIR/ccb_peer.py" disconnect` 下线并停止循环。
+   - **离开主题 ≠ 下线**：让你"离开本大厅/退出某主题/你可以走了"时，用
+     `python "$SKILL_DIR/ccb_peer.py" leave --topic <主题>` 退出**那个主题**即可——你仍在线、仍待命、
+     可被 invite 拉回（即便不在任何主题也继续 `wait`），**别 disconnect**。
+   - **不要结束待命去等用户开口**；用户随时可按 Esc 打断你插话。只有用户明确说"退出待命/停止/下线"时，
+     才 `python "$SKILL_DIR/ccb_peer.py" disconnect` 整体下线并停止循环。
 
 下面是各动作的细节。
 

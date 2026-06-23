@@ -131,7 +131,11 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             "ask（把问题作为入参）：它把问题发到群里（GUI 中高亮为「等你回答」）并就地等用户\n"
             "回复后返回，其间你始终在线。**不要**用 AskUserQuestion，也**不要**结束本回合去问\n"
             "你终端的本地用户——那等于擅自退出待命。需要别的仓库参与时，先 @ 点名或 invite 拉进来再 ask。\n\n"
-            "仅当用户说「退出待命 / 停止 / exit standby」时，才用 disconnect 下线停止循环。\n"
+            "【离开主题 ≠ 下线】\n"
+            "让你「离开本大厅 / 退出某主题 / 你可以走了」时：用 leave_room(\"主题名\") 退出**那个\n"
+            "主题**即可——你仍在线、仍在待命，可被 invite 随时拉回；即便已不在任何主题，也**继续\n"
+            "wait_for_messages** 保持在线（被邀请时会自动回到对话）。**不要**因此 disconnect。\n"
+            "只有用户明确说「退出待命 / 下线 / 停止 / stop」要你整体下线时，才用 disconnect 停止循环。\n"
             "（用户随时可按 Esc 打断你插话。）"
         )
 
@@ -429,7 +433,8 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
 
     @mcp.tool()
     async def leave_room(topic: str = "") -> str:
-        """退出某个主题群（缺省=当前主题）；你仍保持在线，可继续在其它主题协同。"""
+        """退出某个主题群（缺省=当前主题）；**你仍保持在线、仍在待命**，可被 invite 拉回或在
+        其它主题继续。这**不是下线**——被请出某个群/让你"离开本大厅"时用它，别用 disconnect。"""
         aid = _session["agent_id"]
         if not aid:
             return "你尚未加入任何主题。"
@@ -441,7 +446,10 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             await c.delete(f"/api/rooms/{match['id']}/agents/{aid}")
         if _session.get("active_room") == match["id"]:
             _session["active_room"] = None
-        return f"已退出主题「{match['name']}」。"
+        return (
+            f"已退出主题「{match['name']}」。你仍在线、仍在待命（**没有下线**），可被 invite 随时"
+            "拉回。请继续 wait_for_messages 保持在线；被重新邀请时会自动回到对话。"
+        )
 
     @mcp.tool()
     async def disconnect() -> str:

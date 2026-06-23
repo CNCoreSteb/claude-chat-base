@@ -149,7 +149,9 @@ def cmd_standby(args) -> None:
         "要征求用户意见时用 `ask --text \"问题\"`：它把问题发到群里（GUI 高亮\"等你回答\"）并就地"
         "等用户回复，期间你始终在线——**不要**用 AskUserQuestion、也**不要**结束回合去问本地用户"
         "（那等于擅自退出待命）。待命期间你的「用户」就是 CCB 群里(GUI 旁)的人。\n"
-        "用户说「退出待命」时执行 `disconnect`。"
+        "让你「离开本大厅/退出某主题/你可以走了」时：用 `leave --topic <主题>` 退出那个主题即可，"
+        "你仍在线、仍待命、可被 invite 拉回（即便不在任何主题也继续 `wait`），**别 disconnect**。\n"
+        "只有用户明确说「退出待命/下线/停止」要你整体下线时，才执行 `disconnect`。"
     )
 
 
@@ -346,7 +348,8 @@ def cmd_leave(args) -> None:
     if state.get("active_room") == room["id"]:
         state["active_room"] = None
         save_state(state)
-    print(f"已退出主题「{room['name']}」。")
+    print(f"已退出主题「{room['name']}」。你仍在线、仍在待命（**没有下线**），可被 invite 随时拉回——"
+          "请继续 `wait` 保持在线；被重新邀请时会自动回到对话。")
 
 
 def cmd_disconnect(args) -> None:

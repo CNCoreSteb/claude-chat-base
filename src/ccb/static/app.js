@@ -37,6 +37,8 @@ createApp({
       modal: { title: "", fields: [], values: {}, onSave: null },
       // @提及自动补全：open 是否显示、items 候选、index 高亮项、start 输入框里 @ 的下标。
       mention: { open: false, items: [], index: 0, start: -1 },
+      // 正在回复的目标消息（QQ 式引用）：{ id, sender_name, preview }，null 表示不引用。
+      replyTo: null,
     };
   },
 
@@ -44,6 +46,15 @@ createApp({
     roomList() { return Object.values(this.rooms); },
     currentRoom() { return this.rooms[this.currentRoomId] || null; },
     currentMessages() { return this.messages[this.currentRoomId] || []; },
+    // 当前主题里被引用回复过的消息 id 集合——提问被回复后据此把"等你回答"翻成"已回复"。
+    repliedToIds() {
+      const s = new Set();
+      for (const m of this.currentMessages) {
+        const rid = m.meta && m.meta.reply_to;
+        if (rid) s.add(rid);
+      }
+      return s;
+    },
     roomAgents() {
       const r = this.currentRoom;
       return r ? r.agent_ids.map((id) => this.agents[id]).filter(Boolean) : [];
@@ -204,6 +215,8 @@ createApp({
     // ----- 主题 -----
     selectRoom(id) {
       this.currentRoomId = id;
+      this.replyTo = null;            // 切主题：清掉上个主题里选中的回复目标
+      this.closeMention();
       this.stick = true;
       // 切换主题时用平滑滚动（仅此一处），保留切换的顺滑观感。
       this.$nextTick(() => {
@@ -219,11 +232,25 @@ createApp({
     sendMessage() {
       const text = this.draft.trim();
       if (!text || !this.currentRoomId) return;
-      this.api("POST", `/api/rooms/${this.currentRoomId}/messages`, { content: text }).catch(() => {});
+      const body = { content: text };
+      if (this.replyTo) body.reply_to = this.replyTo.id;
+      this.api("POST", `/api/rooms/${this.currentRoomId}/messages`, body).catch(() => {});
       this.draft = "";
+      this.replyTo = null;
       const el = this.$refs.composer;
       if (el) el.style.height = "auto";
     },
+    // ----- 回复指定消息（QQ 式引用）-----
+    startReply(m) {
+      if (!m || m.role === "system") return;   // 系统提示不可回复
+      this.replyTo = {
+        id: m.id,
+        sender_name: m.sender_name,
+        preview: (m.content || "").replace(/\s+/g, " ").slice(0, 80),
+      };
+      this.$nextTick(() => this.$refs.composer?.focus());
+    },
+    cancelReply() { this.replyTo = null; },
     autoGrow(e) {
       const el = e.target;
       el.style.height = "auto";

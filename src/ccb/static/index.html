@@ -119,16 +119,21 @@
           <p>各仓库的 Claude Code 接入后，协作消息会实时显示在这里。<br>你也可以在下方以人类身份直接插话。</p>
         </div>
         <div v-for="m in currentMessages" :key="m.id" class="msg"
-             :class="['msg--' + m.role, { streaming: m.streaming, 'msg--question': m.meta && m.meta.is_question }]">
+             :class="['msg--' + m.role, { streaming: m.streaming, 'msg--question': m.meta && m.meta.is_question && !repliedToIds.has(m.id) }]">
           <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
           <template v-else>
             <div class="avatar" :style="{ background: m.color || 'var(--bs-secondary-bg)' }">{{ initials(m.sender_name) }}</div>
-            <div class="msg-body min-w-0">
+            <div class="msg-body min-w-0" @contextmenu.prevent="startReply(m)">
               <div class="msg-head d-flex align-items-baseline gap-2">
                 <span class="fw-semibold" :style="{ color: m.color || 'var(--bs-body-color)' }">{{ m.sender_name }}</span>
                 <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
-                <span v-if="m.meta && m.meta.is_question" class="badge text-bg-warning">❓ 等你回答</span>
+                <span v-if="m.meta && m.meta.is_question" class="badge"
+                      :class="repliedToIds.has(m.id) ? 'text-bg-success' : 'text-bg-warning'">
+                  {{ repliedToIds.has(m.id) ? '✅ 已回复' : '❓ 等你回答' }}
+                </span>
                 <span class="small text-secondary">{{ fmtTime(m.ts) }}</span>
+                <button class="msg-reply-btn btn btn-link btn-sm p-0 ms-auto text-secondary"
+                        title="回复这条" :aria-label="'回复 ' + m.sender_name" @click="startReply(m)">↩ 回复</button>
               </div>
               <div v-if="m.meta && m.meta.reply_to_sender" class="msg-quote">
                 <span class="msg-quote-sender">{{ m.meta.reply_to_sender }}</span>
@@ -140,8 +145,15 @@
         </div>
       </div>
 
-      <footer class="composer d-flex gap-2 px-4 py-3 border-top">
+      <footer class="composer d-flex align-items-end gap-2 px-4 py-3 border-top">
         <div class="mention-wrap flex-grow-1 position-relative">
+          <div v-if="replyTo" class="reply-bar">
+            <span aria-hidden="true">↩</span>
+            <span class="reply-bar-sender">{{ replyTo.sender_name }}</span>
+            <span class="reply-bar-text text-truncate min-w-0 flex-grow-1">{{ replyTo.preview }}</span>
+            <button class="btn btn-sm btn-link p-0 text-secondary flex-shrink-0"
+                    @click="cancelReply" aria-label="取消回复" title="取消回复">✕</button>
+          </div>
           <ul v-if="mention.open" class="mention-menu" role="listbox" aria-label="提及参与者">
             <li v-for="(a, i) in mention.items" :key="a.id" role="option"
                 :class="['mention-item', { active: i === mention.index }]"

@@ -125,6 +125,22 @@ body { overflow: hidden; }
 
 .composer textarea { resize: none; max-height: 140px; }
 
+/* 每条消息的「回复」按钮：平时隐藏，悬停或聚焦该消息时浮现，模仿 IM。 */
+.msg-reply-btn { opacity: 0; transition: opacity 0.15s ease; white-space: nowrap; flex-shrink: 0; }
+.msg:hover .msg-reply-btn, .msg-reply-btn:focus-visible { opacity: 1; }
+
+/* 输入框上方的「正在回复 X」引用条。 */
+.reply-bar {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px; padding: 6px 10px;
+  border-left: 3px solid var(--bs-primary);
+  background: var(--bs-tertiary-bg);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.reply-bar-sender { font-weight: 600; color: var(--bs-primary); flex-shrink: 0; }
+.reply-bar-text { color: var(--bs-secondary-color); }
+
 /* @提及自动补全下拉：浮在输入框上方，模仿 IM 的 @ 面板。 */
 .mention-menu {
   position: absolute; left: 0; right: 0; bottom: calc(100% + 6px);

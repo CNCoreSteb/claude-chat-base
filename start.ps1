@@ -12,7 +12,9 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 # 同步依赖（uv 会在需要时自动下载合适的 Python）。
+# 注意：$ErrorActionPreference="Stop" 不拦截原生命令的非零退出码，需显式检查（对齐 start.sh 的 set -e）。
 uv sync
+if ($LASTEXITCODE -ne 0) { Write-Host "uv sync 失败（退出码 $LASTEXITCODE），已中止。"; exit $LASTEXITCODE }
 
 Write-Host "正在启动 Claude Chat Base...（Ctrl+C 退出）"
 uv run ccb @args

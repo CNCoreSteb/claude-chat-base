@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import Agent, AgentKind, Room, Strategy
+
+log = logging.getLogger("ccb.config")
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_PRESET = PACKAGE_DIR / "presets" / "default.toml"
@@ -60,7 +63,12 @@ def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]
     if not path.exists():
         return [], []
 
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    # 预设损坏不应让整个服务起不来：解析失败时告警并以空状态启动（与缺失文件一致）。
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as exc:
+        log.warning("预设 %s 解析失败：%s —— 跳过预设，以空状态启动。", path, exc)
+        return [], []
 
     agents: list[Agent] = []
     name_to_id: dict[str, str] = {}

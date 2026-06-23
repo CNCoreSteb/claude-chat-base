@@ -22,9 +22,10 @@ from .server import create_app
 
 def _build_settings(args: argparse.Namespace) -> Settings:
     settings = Settings()
-    if args.host:
+    # 用 `is not None` 而非真值判断：否则合法的 --port 0（让 OS 选端口）/ --host "" 会被静默丢弃。
+    if args.host is not None:
         settings.host = args.host
-    if args.port:
+    if args.port is not None:
         settings.port = args.port
     if args.provider:
         settings.provider = args.provider
@@ -41,14 +42,18 @@ def _build_settings(args: argparse.Namespace) -> Settings:
 
 def _open_browser_when_ready(url: str, health_url: str) -> None:
     def _worker() -> None:
+        healthy = False
         for _ in range(100):  # 总共约 10 秒
             try:
                 with urllib.request.urlopen(health_url, timeout=1) as resp:
                     if resp.status == 200:
+                        healthy = True
                         break
             except (urllib.error.URLError, OSError):
                 pass
             threading.Event().wait(0.1)
+        if not healthy:
+            return  # 服务始终未就绪：不要打开一个打不开的页面
         try:
             webbrowser.open(url)
         except Exception:  # noqa: BLE001 - 无图形界面的环境没有浏览器
@@ -71,6 +76,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--log-level", default="info", help="uvicorn 日志级别")
     args = parser.parse_args(argv)
 
+    # 校验日志级别，避免非法值在 banner/浏览器线程都已启动后才让 uvicorn 崩溃。
+    valid_levels = {"critical", "error", "warning", "info", "debug", "trace"}
+    if args.log_level.lower() not in valid_levels:
+        print(f"  无效的 --log-level「{args.log_level}」，回退到 info。")
+        args.log_level = "info"
+
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -80,9 +91,11 @@ def main(argv: list[str] | None = None) -> None:
     app = create_app(settings)
 
     # 0.0.0.0 监听所有网卡；无论如何都让浏览器指向 localhost。
-    display_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::") else settings.host
-    url = f"http://{display_host}:{settings.port}/"
-    health_url = f"http://{display_host}:{settings.port}/api/health"
+    display_host = "127.0.0.1" if settings.host in ("0.0.0.0", "::", "") else settings.host
+    # IPv6 字面量在 URL 里必须用方括号包裹，否则 http://::1:8800 是畸形地址。
+    url_host = f"[{display_host}]" if ":" in display_host else display_host
+    url = f"http://{url_host}:{settings.port}/"
+    health_url = f"http://{url_host}:{settings.port}/api/health"
 
     banner = (
         "\n"

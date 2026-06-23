@@ -1,0 +1,51 @@
+[project]
+name = "claude-chat-base"
+version = "0.1.0"
+description = "Claude Chat Base（CCB）——跨平台、带 GUI、可观察的智能体群聊系统。"
+readme = "docs/agents/ccb/usage.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Claude Chat Base" }]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "anthropic>=0.40",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "mcp>=1.2",
+]
+
+[project.scripts]
+ccb = "ccb.cli:main"
+ccb-mcp = "ccb.mcp_server:main"
+
+# 开发/测试工具放进 dependency-group；uv 默认会同步它，
+# 因此 `uv sync` 一条命令即全量安装（运行 + MCP + 测试），无需任何 --extra。
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccb"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

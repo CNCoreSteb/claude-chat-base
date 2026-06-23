@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# uv / virtualenvs
+.venv/
+venv/
+
+# CCB runtime data (database, transcripts, room state)
+.ccb/
+data/
+# CCB skill peer client session state (written into target repos)
+.ccb-peer.json
+
+# Environment
+.env
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Playwright (used for local GUI verification)
+.playwright-mcp/

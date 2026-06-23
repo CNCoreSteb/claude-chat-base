@@ -28,6 +28,12 @@ createApp({
       stick: true,       // 是否贴着底部（决定流式时是否自动滚动）
       toastMsg: "",
       palette: PALETTE,
+      // 主题：用预绘制脚本已写入的 data-bs-theme 作为初值，保证切换按钮图标与实际主题一致。
+      theme: document.documentElement.getAttribute("data-bs-theme") || "dark",
+      // WebSocket 重连：指数退避 + 去重，避免断网时每 1.2s 刷屏并堆叠定时器。
+      reconnectDelay: 1200,
+      reconnectTimer: null,
+      wasConnected: false,
       modal: { title: "", fields: [], values: {}, onSave: null },
     };
   },
@@ -97,7 +103,21 @@ createApp({
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(`${proto}://${location.host}/ws`);
       ws.onmessage = (e) => this.handleEvent(JSON.parse(e.data));
-      ws.onclose = () => { this.toast("连接断开 —— 正在重连…"); setTimeout(() => this.connect(), 1200); };
+      ws.onopen = () => {
+        this.reconnectDelay = 1200;
+        if (this.wasConnected) this.toast("已重连");
+        this.wasConnected = true;
+      };
+      ws.onclose = () => {
+        if (this.reconnectTimer) return;            // 已有挂起的重连，避免叠加
+        if (this.wasConnected) this.toast("连接断开 —— 正在重连…");  // 仅在「已连接→断开」时提示一次
+        this.wasConnected = false;
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;               // 必须先清空再重连，否则会永久卡住
+          this.connect();
+        }, this.reconnectDelay);
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, 15000);  // 指数退避，封顶 15s
+      };
       ws.onerror = () => ws.close();
     },
 
@@ -154,6 +174,10 @@ createApp({
         const m = list.find((x) => x.id === msg.id);
         if (m) { Object.assign(m, msg); m.streaming = false; }
       }
+      // 流式收尾时高度可能变化；若仍贴底则补一次精确滚动（取代已移除的全局 updated 钩子）。
+      if (msg.room_id === this.currentRoomId && this.stick) {
+        this.$nextTick(() => this.scrollToBottom());
+      }
     },
     onScroll() {
       const t = this.$refs.transcript;
@@ -161,14 +185,19 @@ createApp({
     },
     scrollToBottom() {
       const t = this.$refs.transcript;
-      if (t) t.scrollTop = t.scrollHeight;
+      // 用 behavior:auto 瞬时贴底——流式高频更新时若用 smooth 会持续追不上底部而抖动。
+      if (t) t.scrollTo({ top: t.scrollHeight, behavior: "auto" });
     },
 
     // ----- 主题 -----
     selectRoom(id) {
       this.currentRoomId = id;
       this.stick = true;
-      this.$nextTick(() => this.scrollToBottom());
+      // 切换主题时用平滑滚动（仅此一处），保留切换的顺滑观感。
+      this.$nextTick(() => {
+        const t = this.$refs.transcript;
+        if (t) t.scrollTo({ top: t.scrollHeight, behavior: "smooth" });
+      });
     },
     async roomAction(action) {
       if (this.currentRoom) await this.api("POST", `/api/rooms/${this.currentRoom.id}/${action}`);
@@ -233,6 +262,7 @@ createApp({
       const values = {};
       for (const f of fields) values[f.key] = f.value ?? "";
       this.modal = { title, fields, values, onSave };
+      this._modalOpener = document.activeElement;   // 记下触发按钮，关闭后把焦点还回去
       this.bsModal.show();
     },
     hideModal() { this.bsModal.hide(); },
@@ -289,15 +319,38 @@ createApp({
       }));
     },
 
+    // ----- 主题（深 / 浅色） -----
+    applyTheme(theme, persist) {
+      this.theme = theme;
+      document.documentElement.setAttribute("data-bs-theme", theme);
+      if (persist) {
+        try { localStorage.setItem("ccb-theme", theme); } catch (e) { /* 隐私模式：退化为内存态 */ }
+      }
+    },
+    toggleTheme() {
+      this.applyTheme(this.theme === "dark" ? "light" : "dark", true);
+    },
+
     toast(msg) { this.toastMsg = msg; this.bsToast.show(); },
   },
 
-  updated() {
-    if (this.stick) this.scrollToBottom();
-  },
   mounted() {
     this.bsModal = new bootstrap.Modal(this.$refs.modal);
     this.bsToast = new bootstrap.Toast(this.$refs.toast, { delay: 2600 });
+    // 弹窗关闭后把焦点还给触发按钮；打开后自动聚焦首个表单控件（焦点捕获由 Bootstrap 负责）。
+    this.$refs.modal.addEventListener("hidden.bs.modal", () => this._modalOpener?.focus());
+    this.$refs.modal.addEventListener("shown.bs.modal", () => {
+      this.$refs.modal.querySelector(".modal-body input, .modal-body textarea, .modal-body select")?.focus();
+    });
+    // 跟随系统配色，直到用户首次手动切换（手动切换会写入 localStorage 并永久退出跟随）。
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onMq = (e) => {
+      let stored = null;
+      try { stored = localStorage.getItem("ccb-theme"); } catch (_) { /* 忽略 */ }
+      if (stored) return;
+      this.applyTheme(e.matches ? "light" : "dark", false);
+    };
+    mq.addEventListener ? mq.addEventListener("change", onMq) : mq.addListener(onMq);
     this.connect();
   },
 }).mount("#app");

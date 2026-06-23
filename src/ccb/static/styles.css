@@ -8,12 +8,18 @@ body { overflow: hidden; }
 /* ----- 三栏外壳 ----- */
 .app-shell {
   display: grid;
-  grid-template-columns: 264px 1fr 300px;
+  /* 侧栏用 minmax 让中等屏(821~1100px)时把空间优先让给中间对话区，避免聊天区被挤窄。 */
+  grid-template-columns: minmax(220px, 264px) 1fr minmax(0, 300px);
   height: 100vh;
 }
 .pane { min-width: 0; min-height: 0; }
 .pane-left, .pane-right { background: var(--bs-tertiary-bg); overflow-y: auto; }
 .pane-center { background: var(--bs-body-bg); }
+
+/* 切换深 / 浅色时让主要区块平滑过渡（属性列表保持精简，避免滚动区频繁重绘）。 */
+.pane-left, .pane-right, .pane-center, .msg-text {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
 
 .pane-head {
   display: flex;
@@ -27,6 +33,7 @@ body { overflow: hidden; }
 
 .room-item { cursor: pointer; border-left: 3px solid transparent; }
 .room-item.active { border-left-color: var(--bs-primary); }
+.room-item:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: -2px; }
 
 /* ----- 状态点 / 色块 ----- */
 .dot {
@@ -43,7 +50,9 @@ body { overflow: hidden; }
 .swatch-pick.sel { border-color: var(--bs-body-color); }
 
 /* ----- 对话区 ----- */
-.transcript { display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+/* 不设 scroll-behavior:smooth——它会和 JS 直接赋值 scrollTop 的贴底逻辑打架；平滑滚动改由
+   selectRoom 在切换主题时按需触发。 */
+.transcript { display: flex; flex-direction: column; gap: 16px; }
 .empty-state { margin: auto; max-width: 320px; }
 
 .msg { display: flex; gap: 12px; max-width: 760px; animation: rise 0.22s ease; }
@@ -59,6 +68,7 @@ body { overflow: hidden; }
 .avatar {
   width: 34px; height: 34px; border-radius: 9px;
   display: grid; place-items: center;
+  /* #0b0d12 故意固定为深色：头像底色是高饱和色块，深浅两种主题下字形都清晰，不随主题变量走。 */
   font-weight: 700; font-size: 14px; color: #0b0d12; flex-shrink: 0;
 }
 .msg-body { min-width: 0; }

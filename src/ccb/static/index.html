@@ -1,9 +1,22 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-bs-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Claude Chat Base —— 智能体群聊</title>
+  <!-- 预绘制主题脚本：必须在样式表之前执行，根据 localStorage / 系统偏好定下 data-bs-theme，
+       避免页面以错误主题闪一帧（FOUC）。app.js 在 body 末尾加载，太晚，无法替代此处。 -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("ccb-theme");
+        if (!t) t = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        document.documentElement.setAttribute("data-bs-theme", t);
+      } catch (e) {
+        document.documentElement.setAttribute("data-bs-theme", "dark");
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="vendor/bootstrap.min.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon"
@@ -13,26 +26,31 @@
   <div id="app" class="app-shell">
 
     <!-- 左栏：主题 + 实例 -->
-    <aside class="pane pane-left d-flex flex-column">
+    <aside class="pane pane-left d-flex flex-column" aria-label="主题与实例">
       <div class="brand d-flex align-items-center gap-2 px-3 py-3 border-bottom">
         <span class="fs-3">🗣️</span>
         <div>
           <div class="fw-bold">Claude Chat Base</div>
           <div class="text-secondary small text-uppercase" style="letter-spacing:2px">智能体群聊</div>
         </div>
+        <button class="btn btn-sm btn-outline-secondary ms-auto" @click="toggleTheme"
+                :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
+                :title="theme === 'dark' ? '浅色模式' : '深色模式'">{{ theme === 'dark' ? '☀️' : '🌙' }}</button>
       </div>
 
       <div class="pane-head">
         <span>主题</span>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="newRoom" title="新建主题">＋</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="newRoom" aria-label="新建主题" title="新建主题">＋</button>
       </div>
       <ul class="list-group list-group-flush overflow-auto">
         <li v-for="r in roomList" :key="r.id"
             class="list-group-item list-group-item-action room-item"
-            :class="{ active: r.id === currentRoomId }" @click="selectRoom(r.id)">
+            :class="{ active: r.id === currentRoomId }" role="button" tabindex="0"
+            :aria-current="r.id === currentRoomId ? 'true' : null" @click="selectRoom(r.id)"
+            @keydown.enter.prevent="selectRoom(r.id)" @keydown.space.prevent="selectRoom(r.id)">
           <div class="fw-semibold">{{ r.name }}</div>
           <div class="small text-secondary d-flex align-items-center gap-2">
-            <span class="dot" :class="r.status"></span>
+            <span class="dot" :class="r.status" aria-hidden="true"></span>
             <span>{{ statusText(r.status) }} · {{ r.agent_ids.length }} 名成员</span>
           </div>
         </li>
@@ -40,21 +58,22 @@
 
       <div class="pane-head">
         <span>实例（自注册）</span>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="copyGenericJoin" title="复制接入命令">⧉</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="copyGenericJoin" aria-label="复制通用接入命令" title="复制接入命令">⧉</button>
       </div>
       <ul class="list-group list-group-flush overflow-auto">
         <li v-if="!peerInstances.length" class="list-group-item text-secondary small">暂无实例，点 ⧉ 复制接入命令</li>
         <li v-for="a in peerInstances" :key="a.id" class="list-group-item d-flex align-items-center gap-2">
-          <span class="dot" :class="{ running: a.online }" :title="a.online ? '在线' : '离线'"></span>
+          <span class="dot" :class="{ running: a.online }" role="img"
+                :aria-label="a.online ? '在线' : '离线'" :title="a.online ? '在线' : '离线'"></span>
           <div class="flex-grow-1 min-w-0">
             <div class="fw-semibold text-truncate">{{ a.name }}</div>
             <div class="small text-secondary text-truncate">{{ a.role || '未注明职责' }}</div>
           </div>
           <button v-if="currentRoom && !currentRoom.agent_ids.includes(a.id)"
                   class="btn btn-sm btn-link p-0 px-1 text-secondary" title="加入当前主题"
-                  @click="addToRoom(a.id)">＋</button>
+                  :aria-label="'把 ' + a.name + ' 加入当前主题'" @click="addToRoom(a.id)">＋</button>
           <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="删除实例"
-                  @click="deleteInstance(a)">✕</button>
+                  :aria-label="'删除实例 ' + a.name" @click="deleteInstance(a)">✕</button>
         </li>
       </ul>
 
@@ -69,7 +88,7 @@
     </aside>
 
     <!-- 中间：对话 -->
-    <main class="pane pane-center d-flex flex-column">
+    <main class="pane pane-center d-flex flex-column" aria-label="对话">
       <header class="chat-head d-flex justify-content-between align-items-start gap-3 px-4 py-3 border-bottom">
         <div class="min-w-0">
           <h1 class="h5 mb-1 text-truncate">{{ currentRoom ? currentRoom.name : '未选择主题' }}</h1>
@@ -96,10 +115,10 @@
         <div v-for="m in currentMessages" :key="m.id" class="msg" :class="['msg--' + m.role, { streaming: m.streaming }]">
           <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
           <template v-else>
-            <div class="avatar" :style="{ background: m.color || '#94a3b8' }">{{ initials(m.sender_name) }}</div>
+            <div class="avatar" :style="{ background: m.color || 'var(--bs-secondary-bg)' }">{{ initials(m.sender_name) }}</div>
             <div class="msg-body min-w-0">
               <div class="msg-head d-flex align-items-baseline gap-2">
-                <span class="fw-semibold" :style="{ color: m.color || '#cbd5e1' }">{{ m.sender_name }}</span>
+                <span class="fw-semibold" :style="{ color: m.color || 'var(--bs-body-color)' }">{{ m.sender_name }}</span>
                 <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
                 <span class="small text-secondary">{{ fmtTime(m.ts) }}</span>
               </div>
@@ -118,10 +137,10 @@
     </main>
 
     <!-- 右栏：参与者 -->
-    <aside class="pane pane-right d-flex flex-column">
+    <aside class="pane pane-right d-flex flex-column" aria-label="参与者">
       <div class="pane-head">
         <span>参与者</span>
-        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="newAgent" title="新增参与者">＋</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="newAgent" aria-label="新增参与者" title="新增参与者">＋</button>
       </div>
       <ul class="list-group list-group-flush overflow-auto flex-grow-1">
         <li v-for="a in roomAgents" :key="a.id" class="list-group-item d-flex align-items-center gap-2"
@@ -130,23 +149,26 @@
           <div class="flex-grow-1 min-w-0">
             <div class="fw-semibold d-flex align-items-center gap-2">
               <span class="text-truncate">{{ a.name }}</span>
-              <span v-if="a.kind === 'peer'" class="dot" :class="{ running: a.online }"></span>
+              <span v-if="a.kind === 'peer'" class="dot" :class="{ running: a.online }" aria-hidden="true"></span>
             </div>
             <div class="small" :class="statusClass(a)">{{ statusLabel(a) }}</div>
             <div v-if="a.kind === 'peer' && a.repo_path" class="small text-secondary font-monospace text-truncate">{{ a.repo_path }}</div>
           </div>
-          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="复制接入命令" @click="copyJoin(a)">⧉</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="复制接入命令"
+                  :aria-label="'复制 ' + a.name + ' 的接入命令'" @click="copyJoin(a)">⧉</button>
           <!-- AI 自动对话停用：移除 AI 智能体的静音开关
           <button v-else class="btn btn-sm btn-link p-0 px-1 text-secondary" :title="a.enabled ? '静音' : '取消静音'"
                   @click="patchAgent(a.id, { enabled: !a.enabled })">{{ a.enabled ? '🔵' : '⚪' }}</button>
           -->
-          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="编辑" @click="editAgent(a)">✎</button>
-          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="移出主题" @click="removeFromRoom(a.id)">✕</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="编辑"
+                  :aria-label="'编辑 ' + a.name" @click="editAgent(a)">✎</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="移出主题"
+                  :aria-label="'把 ' + a.name + ' 移出主题'" @click="removeFromRoom(a.id)">✕</button>
         </li>
       </ul>
       <div class="p-3 border-top">
-        <select class="form-select form-select-sm" :disabled="!availableAgents.length"
-                @change="onAddExisting($event)">
+        <select class="form-select form-select-sm" aria-label="把已有参与者加入主题"
+                :disabled="!availableAgents.length" @change="onAddExisting($event)">
           <option value="">{{ availableAgents.length ? '把已有参与者加入主题…' : '没有可添加的参与者' }}</option>
           <option v-for="a in availableAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
         </select>
@@ -154,26 +176,28 @@
     </aside>
 
     <!-- 弹窗（Bootstrap modal，内容由 Vue 渲染） -->
-    <div class="modal fade" tabindex="-1" ref="modal">
+    <div class="modal fade" tabindex="-1" role="dialog" aria-modal="true"
+         aria-labelledby="ccbModalTitle" ref="modal">
       <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
           <div class="modal-header">
-            <h2 class="modal-title h6 mb-0">{{ modal.title }}</h2>
-            <button type="button" class="btn-close" @click="hideModal"></button>
+            <h2 class="modal-title h6 mb-0" id="ccbModalTitle">{{ modal.title }}</h2>
+            <button type="button" class="btn-close" aria-label="关闭" @click="hideModal"></button>
           </div>
           <div class="modal-body">
             <div v-for="f in modal.fields" :key="f.key" class="mb-3">
-              <label class="form-label small">{{ f.label }}</label>
-              <textarea v-if="f.type === 'textarea'" v-model="modal.values[f.key]" class="form-control" rows="3"></textarea>
-              <select v-else-if="f.type === 'select'" v-model="modal.values[f.key]" class="form-select">
+              <label class="form-label small" :for="f.type === 'color' ? null : 'fld-' + f.key">{{ f.label }}</label>
+              <textarea v-if="f.type === 'textarea'" :id="'fld-' + f.key" v-model="modal.values[f.key]" class="form-control" rows="3"></textarea>
+              <select v-else-if="f.type === 'select'" :id="'fld-' + f.key" v-model="modal.values[f.key]" class="form-select">
                 <option v-for="o in f.options" :key="o.value" :value="o.value">{{ o.label }}</option>
               </select>
-              <div v-else-if="f.type === 'color'" class="d-flex flex-wrap gap-2">
+              <div v-else-if="f.type === 'color'" class="d-flex flex-wrap gap-2" role="group" :aria-label="f.label">
                 <button v-for="c in palette" :key="c" type="button" class="swatch-pick"
                         :class="{ sel: modal.values[f.key] === c }" :style="{ background: c }"
+                        :aria-label="'颜色 ' + c" :aria-pressed="modal.values[f.key] === c"
                         @click="modal.values[f.key] = c"></button>
               </div>
-              <input v-else :type="f.type || 'text'" v-model="modal.values[f.key]" class="form-control" />
+              <input v-else :type="f.type || 'text'" :id="'fld-' + f.key" v-model="modal.values[f.key]" class="form-control" />
             </div>
           </div>
           <div class="modal-footer">
@@ -186,7 +210,8 @@
 
     <!-- toast -->
     <div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3">
-      <div class="toast align-items-center border-0" ref="toast">
+      <div class="toast align-items-center text-bg-secondary border-0" role="status"
+           aria-live="polite" aria-atomic="true" ref="toast">
         <div class="d-flex">
           <div class="toast-body">{{ toastMsg }}</div>
         </div>

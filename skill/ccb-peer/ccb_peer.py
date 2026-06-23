@@ -39,8 +39,12 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    with open(STATE_PATH, "w", encoding="utf-8") as fh:
+    # 原子写：先写临时文件再 os.replace，避免写到一半崩溃/中断把 .ccb-peer.json 写坏，
+    # 导致 load_state 读不出来而静默丢掉整个身份（agent_id/当前主题/游标）。
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(state, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, STATE_PATH)
 
 
 def base_url(state: dict) -> str:
@@ -49,19 +53,32 @@ def base_url(state: dict) -> str:
 
 # ----- HTTP ------------------------------------------------------------------
 
-def request(method: str, url: str, body: dict | None = None, timeout: float = 35.0):
+def request_status(method: str, url: str, body: dict | None = None, timeout: float = 35.0):
+    """发请求并返回 (status_code, parsed_body_or_raw_text)。
+
+    仅在**连接层**失败（服务未启动 / 网络不可达 / 超时）时直接退出；HTTP 4xx/5xx 会把状态码
+    与响应体原样返回，交由调用方决定是友好处理（如 invite 的 404）还是 die。
+    """
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"} if data is not None else {}
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else None
+            return resp.status, (json.loads(raw) if raw else None)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "ignore")
-        die(f"请求失败 {e.code}：{detail or e.reason}")
-    except urllib.error.URLError as e:
-        die(f"无法连接 CCB（{url}）：{e.reason}。请确认服务已启动（uv run ccb）。")
+        return e.code, (detail or e.reason)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        die(f"无法连接 CCB（{url}）：{reason}。请确认服务已启动（uv run ccb）。")
+
+
+def request(method: str, url: str, body: dict | None = None, timeout: float = 35.0):
+    status, payload = request_status(method, url, body, timeout)
+    if status >= 400:
+        die(f"请求失败 {status}：{payload or ''}")
+    return payload
 
 
 def die(msg: str) -> None:
@@ -94,7 +111,9 @@ def cmd_connect(args) -> None:
         base_url(state) + "/api/instances/connect",
         {"name": name, "role": args.role, "repo_path": args.repo or os.getcwd()},
     )
-    state.update(agent_id=res["agent_id"], name=name, role=args.role, last_ts=0.0)
+    # last_ts 播种为服务端「现在」（仅在尚无游标时），避免首次 wait 回放全量历史；并清掉 kicked。
+    state.update(agent_id=res["agent_id"], name=name, role=args.role,
+                 last_ts=state.get("last_ts") or res.get("now", 0.0), kicked=False)
     save_state(state)
     how = "认领了已有身份" if res.get("claimed") else "新建了身份"
     print(f"已上线：{name}（{args.role or '未注明职责'}），{how}。")
@@ -118,7 +137,8 @@ def cmd_join(args) -> None:
         },
     )
     state.update(agent_id=res["agent_id"], name=name, role=args.role,
-                 active_room=room["id"], last_ts=state.get("last_ts", 0.0))
+                 active_room=room["id"],
+                 last_ts=state.get("last_ts") or res.get("now", 0.0), kicked=False)
     save_state(state)
     how = "认领了已配置的槽位" if res.get("claimed") else "加入"
     print(f"已以「{name}」{how}主题「{room['name']}」，并设为当前主题。")
@@ -139,7 +159,8 @@ def cmd_standby(args) -> None:
         {"room_id": room["id"], "name": name, "role": args.role, "repo_path": os.getcwd()},
     )
     state.update(agent_id=res["agent_id"], name=name, role=args.role,
-                 active_room=room["id"], last_ts=state.get("last_ts", 0.0))
+                 active_room=room["id"],
+                 last_ts=state.get("last_ts") or res.get("now", 0.0), kicked=False)
     save_state(state)
     print(
         f"已进入待命：以「{name}」加入主题「{room['name']}」（仓库 {os.getcwd()}）。\n"
@@ -210,9 +231,19 @@ def cmd_invite(args) -> None:
         save_state(state)
     if not room:
         die(f"未找到主题「{ref}」。")
-    res = request("POST", base_url(state) + f"/api/rooms/{room['id']}/invite",
-                  {"target": args.target, "by": aid})
-    print(f"已把「{res['name']}」拉进主题「{room['name']}」。")
+    # 用 request_status 软处理 404：邀请一个尚未上线的角色/名字是正常情形，应给出友好提示
+    # 而不是以 exit 1 崩掉（与 MCP 桥接对齐）。
+    status, res = request_status(
+        "POST", base_url(state) + f"/api/rooms/{room['id']}/invite",
+        {"target": args.target, "by": aid})
+    if status == 404:
+        die(f"未找到职责/名字为「{args.target}」的已连接实例。先让对方 connect 上线。")
+    if status >= 400:
+        die(f"请求失败 {status}：{res or ''}")
+    if isinstance(res, dict) and res.get("already_member"):
+        print(f"「{res['name']}」已在主题「{room['name']}」中（未重复拉入）。")
+    else:
+        print(f"已把「{res['name']}」拉进主题「{room['name']}」。")
 
 
 def cmd_send(args) -> None:
@@ -237,6 +268,9 @@ def cmd_send(args) -> None:
 def cmd_ask(args) -> None:
     """在群里向用户提问并就地等待答复——待命期间想征求用户意见时用它，别退出循环去问本地用户。"""
     state = load_state()
+    if state.get("kicked"):
+        print("⛔ 你已被踢出 CCB（kicked）。请重新 standby 归队。")
+        return
     aid = require_agent(state)
     ref = args.topic or state.get("active_room")
     if not ref:
@@ -244,24 +278,39 @@ def cmd_ask(args) -> None:
     room = resolve_room(state, ref)
     if not room:
         die(f"未找到主题「{ref}」。")
-    request("POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
-            {"content": args.text, "agent_id": aid, "is_question": True})
+    q = request("POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
+                {"content": args.text, "agent_id": aid, "is_question": True})
+    # 用「刚发出的提问」自身的 ts 作为本次等待的独立游标，且不持久化到 state['last_ts']：
+    # 既不会把历史旧 human 消息误当本次答复（B2），也不会吞掉期间到达的他人消息（B1，
+    # 它们留给 wait 带 «id»/‹被点名› 正常投递）。
+    ask_since = (q or {}).get("ts", state.get("last_ts", 0.0))
     seen_other: list = []
     for _ in range(max(1, int(args.timeout / 25))):
-        since = state.get("last_ts", 0.0)
-        url = base_url(state) + f"/api/instances/{aid}/wait?since={since}&timeout=25"
+        url = base_url(state) + f"/api/instances/{aid}/wait?since={ask_since}&timeout=25"
         msgs = request("GET", url, timeout=35)
         if not msgs:
             continue
-        state["last_ts"] = max(m["ts"] for m in msgs)
-        save_state(state)
+        if any((m.get("meta") or {}).get("kicked") for m in msgs):
+            state["kicked"] = True
+            save_state(state)
+            print("⛔ 你已被踢出 CCB（kicked），提问中止。请重新 standby 归队。")
+            return
+        ask_since = max(m["ts"] for m in msgs)  # 仅推进本地游标
+        rooms_map = state.setdefault("msg_rooms", {})
+        for m in msgs:
+            if m.get("room_id"):
+                rooms_map[m["id"]] = m["room_id"]
         humans = [m for m in msgs if m.get("sender_id") == "human"]
         seen_other += [m for m in msgs if m.get("sender_id") not in ("human", aid)]
         if humans:
+            if humans[-1].get("room_id"):
+                state["active_room"] = humans[-1]["room_id"]
+            save_state(state)
             ans = "\n".join(f"{m['sender_name']}: {m['content']}" for m in humans)
             print(f"用户已回复：\n{ans}{_ask_context(seen_other)}\n"
                   "（已得到答复。处理完后请立刻继续 `wait` 保持待命。）")
             return
+        save_state(state)  # 持久化 msg_rooms 更新（用于后续 reply_to 路由）
     print("（用户暂未回复——你仍在待命、并未离线。可再次 ask 继续等，或先 `wait` 跟进其它消息。）"
           f"{_ask_context(seen_other)}")
 
@@ -276,6 +325,13 @@ def _ask_context(others: list) -> str:
 def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
     if not msgs:
         print("（没有新消息）")
+        return
+    # 被服务端踢出：wait/instance_wait 会立即返回带 meta.kicked 的哨兵。落一个本地 kicked 标记
+    # 并停止——否则每拍都会重新收到踢出横幅、last_ts 反复抬升、永不退出（与 MCP 桥接对齐）。
+    if any((m.get("meta") or {}).get("kicked") for m in msgs):
+        state["kicked"] = True
+        save_state(state)
+        print("⛔ 你已被踢出 CCB（kicked）。待命已结束——请不要再 wait；如需归队请重新 standby。")
         return
     state["last_ts"] = max(m["ts"] for m in msgs)
     me = state.get("agent_id")
@@ -318,6 +374,9 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
 
 def cmd_wait(args) -> None:
     state = load_state()
+    if state.get("kicked"):
+        print("⛔ 你已被踢出 CCB（kicked）。请不要再 wait；如需归队请重新 standby。")
+        return
     aid = require_agent(state)
     since = state.get("last_ts", 0.0)
     url = (base_url(state) + f"/api/instances/{aid}/wait"
@@ -328,6 +387,9 @@ def cmd_wait(args) -> None:
 
 def cmd_read(args) -> None:
     state = load_state()
+    if state.get("kicked"):
+        print("⛔ 你已被踢出 CCB（kicked）。请不要再 read/wait；如需归队请重新 standby。")
+        return
     aid = require_agent(state)
     since = state.get("last_ts", 0.0)
     msgs = request("GET", base_url(state) + f"/api/instances/{aid}/messages?since={since}")
@@ -372,8 +434,12 @@ def cmd_disconnect(args) -> None:
     state = load_state()
     aid = state.get("agent_id")
     if aid:
-        request("POST", base_url(state) + f"/api/peers/{aid}/leave")
-    save_state({"base_url": base_url(state)})
+        # 即便服务端不可达也要把本地身份清掉——否则状态文件会卡着旧 agent_id 无法下线。
+        try:
+            request_status("POST", base_url(state) + f"/api/peers/{aid}/leave")
+        except SystemExit:
+            pass
+    save_state({"base_url": base_url(state)})  # 清空身份/游标/msg_rooms/kicked，仅留服务地址
     print("已下线。")
 
 

@@ -117,8 +117,11 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             data = resp.json()
         _session.update(
             agent_id=data["agent_id"], name=nm, role=role,
-            active_room=match["id"], last_ts=0.0, kicked=False,
+            active_room=match["id"], kicked=False,
         )
+        # 把 last_ts 播种到服务端「现在」，而不是 0.0——否则首次 wait 会把该主题的全部历史
+        # 一次性灌进上下文。已有游标（同进程内再次 standby）则保留，避免错过期间的消息。
+        _session["last_ts"] = _session.get("last_ts") or data.get("now", 0.0)
         return (
             f"已进入待命：以「{nm}」（{role or '未注明职责'}）加入主题「{match['name']}」。\n"
             f"仓库路径：{repo}\n\n"
@@ -154,6 +157,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             resp.raise_for_status()
             data = resp.json()
         _session.update(agent_id=data["agent_id"], name=name, role=role, kicked=False)
+        _session["last_ts"] = _session.get("last_ts") or data.get("now", 0.0)
         how = "认领了已有身份" if data.get("claimed") else "新建了身份"
         return f"已上线：{name}（{role or '未注明职责'}），{how}。"
 
@@ -176,6 +180,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             agent_id=data["agent_id"], name=nm, role=role,
             active_room=match["id"], kicked=False,
         )
+        _session["last_ts"] = _session.get("last_ts") or data.get("now", 0.0)
         how = "认领了已配置的槽位" if data.get("claimed") else "加入"
         return (
             f"已以「{nm}」{how}主题「{match['name']}」。当前主题已切到这里。\n"
@@ -260,6 +265,8 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                 return f"未找到职责/名字为「{target}」的已连接实例。先让对方 connect 上线。"
             resp.raise_for_status()
             data = resp.json()
+        if data.get("already_member"):
+            return f"「{data['name']}」已在主题「{match['name']}」中（未重复拉入）。"
         return f"已把「{data['name']}」拉进主题「{match['name']}」。"
 
     # ----- 收发消息 -----------------------------------------------------------
@@ -315,7 +322,12 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                 json={"content": question, "agent_id": aid, "is_question": True},
             )
             resp.raise_for_status()
-        # 就地等用户(human)答复；只要还没等到就不断续等，绝不离开待命。
+            question_msg = resp.json()
+        # 用「刚发出的提问」自身的 ts 作为本次等待的独立游标，且**不**触碰全局 _session['last_ts']：
+        #  - 不污染全局游标 => 等待期间到达的他人消息/被拉入新主题的通知不会被吞掉，之后
+        #    wait_for_messages 仍会带 «id»/‹被点名› 正常投递它们；
+        #  - 从提问 ts 起算 => 不会把历史里的旧 human 消息误当成对「本次提问」的回答。
+        ask_since = question_msg.get("ts", _session.get("last_ts", 0.0))
         seen_other: list[dict] = []
         for _ in range(max(1, int(timeout / 25))):
             if _session.get("kicked"):
@@ -323,16 +335,24 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             async with _client(timeout=35) as c:
                 r = await c.get(
                     f"/api/instances/{aid}/wait",
-                    params={"since": _session["last_ts"], "timeout": 25.0},
+                    params={"since": ask_since, "timeout": 25.0},
                 )
                 r.raise_for_status()
                 msgs = r.json()
             if not msgs:
                 continue
-            _session["last_ts"] = max(m["ts"] for m in msgs)
+            ask_since = max(m["ts"] for m in msgs)  # 仅推进本地游标
+            # 记录 id→主题，以便随后对这些消息做 reply_to 精确路由（但不动 active_room/last_ts）。
+            rooms_map: dict = _session.setdefault("msg_rooms", {})  # type: ignore[assignment]
+            for m in msgs:
+                if m.get("room_id"):
+                    rooms_map[m["id"]] = m["room_id"]
             humans = [m for m in msgs if m.get("sender_id") == "human"]
             seen_other += [m for m in msgs if m.get("sender_id") not in ("human", aid)]
             if humans:
+                # 让「当前主题」跟随用户答复所在主题，便于直接回复。
+                if humans[-1].get("room_id"):
+                    _session["active_room"] = humans[-1]["room_id"]
                 ans = "\n".join(f"{m['sender_name']}: {m['content']}" for m in humans)
                 extra = _ask_context(seen_other)
                 return (
@@ -478,7 +498,8 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             return "你尚未上线。"
         async with _client() as c:
             await c.post(f"/api/peers/{aid}/leave")
-        _session.update(agent_id=None, name=None, active_room=None, last_ts=0.0, kicked=False)
+        _session.update(agent_id=None, name=None, active_room=None, last_ts=0.0,
+                        kicked=False, msg_rooms={})
         return "已下线。"
 
     return mcp

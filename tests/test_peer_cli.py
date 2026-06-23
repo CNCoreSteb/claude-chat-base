@@ -33,7 +33,7 @@ def test_state_roundtrip(monkeypatch, tmp_path):
 def test_parser_has_all_subcommands(monkeypatch, tmp_path):
     mod = _load(monkeypatch, tmp_path)
     parser = mod.build_parser()
-    for cmd in ["join", "connect", "create-topic", "rooms", "instances",
+    for cmd in ["standby", "join", "connect", "create-topic", "rooms", "instances",
                 "invite", "send", "wait", "read", "peers", "leave", "disconnect", "whoami"]:
         ns = parser.parse_args([cmd] + (["--room", "x"] if cmd == "join" else [])
                                + (["--target", "y"] if cmd == "invite" else [])

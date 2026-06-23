@@ -124,6 +124,31 @@ def cmd_join(args) -> None:
     print(f"已以「{name}」{how}主题「{room['name']}」，并设为当前主题。")
 
 
+def cmd_standby(args) -> None:
+    """进入待命：自注册到主题（缺省"大厅"），并提示进入 wait 轮询循环。"""
+    state = load_state()
+    state["base_url"] = args.url or base_url(state)
+    name = args.name or os.path.basename(os.getcwd()) or "Peer"
+    room = resolve_room(state, args.room)
+    if not room:
+        r = request("POST", base_url(state) + "/api/rooms", {"name": args.room})
+        room = {"id": r["id"], "name": r["name"]}
+    res = request(
+        "POST",
+        base_url(state) + "/api/peers",
+        {"room_id": room["id"], "name": name, "role": args.role, "repo_path": os.getcwd()},
+    )
+    state.update(agent_id=res["agent_id"], name=name, role=args.role,
+                 active_room=room["id"], last_ts=state.get("last_ts", 0.0))
+    save_state(state)
+    print(
+        f"已进入待命：以「{name}」加入主题「{room['name']}」（仓库 {os.getcwd()}）。\n"
+        "现在进入待命循环：反复执行 `wait`（长轮询，期间几乎不耗 token），返回后只处理点名你/"
+        "与本仓库相关的消息——必要时读改本仓库代码再 `send --text`，否则继续 `wait`。\n"
+        "用户说「退出待命」时执行 `disconnect`。"
+    )
+
+
 def cmd_create_topic(args) -> None:
     state = load_state()
     aid = require_agent(state)
@@ -283,6 +308,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ccb_peer", description="CCB 仓库 peer 客户端（无需 MCP）")
     p.add_argument("--url", help=f"CCB 服务地址（默认 {DEFAULT_URL}）")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    c = sub.add_parser("standby", help="进入待命：自注册到主题（缺省大厅），随后进入 wait 轮询循环")
+    c.add_argument("--room", default="大厅"); c.add_argument("--name"); c.add_argument("--role", default="")
+    c.set_defaults(func=cmd_standby)
 
     c = sub.add_parser("connect", help="全局上线（自注册，不进任何主题）")
     c.add_argument("--name"); c.add_argument("--role", default=""); c.add_argument("--repo")

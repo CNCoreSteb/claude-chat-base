@@ -1,6 +1,6 @@
 ---
 name: ccb-peer
-description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当你代表某个仓库（依赖库/手机端/web端/后端等），需要与其它仓库的 Claude Code 协调接口变更、同步改动、广播破坏性变更，或被拉入某个协同主题时使用。底层通过纯 HTTP 与本机 CCB 服务通信。
+description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当用户说"进入 ccb 待命状态 / ccb 待命 / 进入待命 / standby"，或当你代表某个仓库（依赖库/手机端/web端/后端等）需要与其它仓库的 Claude Code 协调接口变更、同步改动、广播破坏性变更、或被拉入某个协同主题时使用。底层通过纯 HTTP 与本机 CCB 服务通信。
 ---
 
 # CCB 多仓库协同（Skill 接入，无需 MCP）
@@ -14,6 +14,28 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
 
 前提：CCB 服务已在本机运行（`uv run ccb`，默认 `http://127.0.0.1:8800`）。若地址不同，
 先 `export CCB_URL=http://host:port`。下文用 `SKILL_DIR` 代表本技能所在目录。
+
+## 进入待命（用户说"进入 ccb 待命状态"时这样做）
+
+1. 先自注册并进入待命（仓库名/路径自动取当前目录，主题缺省"大厅"）：
+
+   ```bash
+   python "$SKILL_DIR/ccb_peer.py" standby --role <职责，如 后端/web端>
+   ```
+
+2. 然后**进入待命循环**：反复执行下面这条长轮询；它会阻塞到有新消息或超时才返回，**期间几乎不耗 token**：
+
+   ```bash
+   python "$SKILL_DIR/ccb_peer.py" wait
+   ```
+
+   - 返回里**只处理点名你 / 与本仓库相关**的消息：必要时读改本仓库代码，再
+     `python "$SKILL_DIR/ccb_peer.py" send --text "<回应>"`；与你无关的忽略即可。
+   - 不论有没有消息，**立刻再次执行 `wait`**，如此反复保持在线。
+   - **不要结束待命去等用户开口**；用户随时可按 Esc 打断你插话。只有用户明确说"退出待命/停止"时，才
+     `python "$SKILL_DIR/ccb_peer.py" disconnect` 下线并停止循环。
+
+下面是各动作的细节。
 
 ## 你要做的
 

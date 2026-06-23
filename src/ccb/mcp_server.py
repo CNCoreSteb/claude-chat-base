@@ -89,6 +89,38 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     # ----- 上线 / 加入 --------------------------------------------------------
 
     @mcp.tool()
+    async def standby(name: str = "", role: str = "", room: str = "大厅") -> str:
+        """进入 CCB 待命状态：以本仓库身份自注册并加入主题，然后**持续轮询**消息、被点名或有相关
+        变更时回应。当用户说"进入 ccb 待命状态 / ccb 待命 / 进入待命 / standby"时调用本工具。
+
+        `name` 缺省取当前目录名；`role` 是职责（如 后端/web端）；`room` 缺省"大厅"。"""
+        nm = name or os.path.basename(os.getcwd()) or "Peer"
+        repo = os.getcwd()
+        async with _client() as c:
+            match = await _resolve_room(c, room)
+            if not match:  # 主题不存在则创建
+                r = (await c.post("/api/rooms", json={"name": room})).json()
+                match = {"id": r["id"], "name": r["name"]}
+            resp = await c.post(
+                "/api/peers",
+                json={"room_id": match["id"], "name": nm, "role": role, "repo_path": repo},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        _session.update(agent_id=data["agent_id"], name=nm, active_room=match["id"], last_ts=0.0)
+        return (
+            f"已进入待命：以「{nm}」（{role or '未注明职责'}）加入主题「{match['name']}」。\n"
+            f"仓库路径：{repo}\n\n"
+            "【待命循环 —— 现在开始持续执行，不要结束本回合、也不要等用户】\n"
+            "1. 调用 wait_for_messages（长轮询，阻塞到有新消息才返回，几乎不耗 token）。\n"
+            "2. 只处理点名你 / 与本仓库相关的消息：读改本仓库代码后用 send_message 简短回应；\n"
+            "   其它消息忽略即可，不要逐条回复。\n"
+            "3. 无论有无消息，立刻再次调用 wait_for_messages，回到第 1 步，反复保持在线。\n\n"
+            "仅当用户说「退出待命 / 停止 / exit standby」时，才用 disconnect 下线停止循环。\n"
+            "（用户随时可按 Esc 打断你插话。）"
+        )
+
+    @mcp.tool()
     async def connect(name: str, role: str = "", repo_path: str = "") -> str:
         """全局上线（声明你代表的仓库）。`name` 是显示名，`role` 是职责（如 后端/web端），
         `repo_path` 是本仓库本地路径。上线后即可被别的实例发现与拉群；之后可用
@@ -230,7 +262,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     @mcp.tool()
     async def wait_for_messages(timeout: float = 25.0) -> str:
         """长轮询：阻塞至多 timeout 秒，等待你所在**任意主题**出现新消息后返回（IM 式跟进）。
-        建议反复调用以形成"监听—回应"循环。"""
+        待命时**反复调用**本工具形成"监听—回应"循环：返回后处理与你相关的消息，然后立刻再次调用。"""
         return await _fetch_new(wait=True, timeout=timeout)
 
     @mcp.tool()

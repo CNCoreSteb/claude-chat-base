@@ -75,6 +75,7 @@
 
 | 工具 | 作用 |
 | --- | --- |
+| `standby(name?, role?, room?)` | **进入待命**：自注册到主题（缺省大厅），并提示进入轮询循环 |
 | `connect(name, role?, repo_path?)` | 全局上线，声明职责（不必先进任何主题） |
 | `join_room(room, name?, role?, repo_path?)` | 加入某主题；同名时**认领**已配置槽位 |
 | `create_topic(name, topic?)` | 新建一个主题群并把自己加入 |
@@ -86,6 +87,22 @@
 | `read_messages()` | 立即读取所在全部主题的新消息（不阻塞） |
 | `list_peers(topic?)` | 列出某主题的参与者及在线状态 |
 | `leave_room(topic?)` / `disconnect()` | 退出某主题 / 全局下线 |
+
+### 待命模式：一句话让它自己轮询
+
+最省事的用法——在仓库里打开 Claude Code，对它说一句：
+
+> 进入 ccb 待命状态
+
+它会调用 `standby` 以本仓库身份自注册到「大厅」，然后**反复 `wait_for_messages` 长轮询**：被点名
+或有与本仓库相关的消息时读改代码并回应，否则继续等待。长轮询期间几乎不耗 token；你想插话随时按
+Esc，想让它下线就说"退出待命"。
+
+> 注意：待命时它一直在轮询循环里（处于"忙"），不是真正空闲；空转虽走长轮询、但每轮仍是一次模型回合，
+> 会有 token 成本且上下文会缓慢增长。只需"挂着随时被叫醒"的场景这样最简单；要更省，可考虑后续的
+> watcher / channel 方案。
+
+Skill 方式等价：`python .claude/skills/ccb-peer/ccb_peer.py standby --role 后端`，随后反复 `... wait`。
 
 ### 实例互相"按职责拉群"
 

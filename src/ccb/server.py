@@ -260,8 +260,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def register_peer(body: dict) -> dict:
         """让一个外部 Claude Code 实例以 peer 身份加入房间。
 
-        若房间里已存在同名的 peer 槽位（通常是在 GUI 里预先配置的仓库），就认领它并
-        标记为在线；否则即时新建一个 peer 参与者。
+        若已存在同名的 peer 实例（**全局**，不限于本房间——例如它先调过 connect 全局上线，
+        或已在别的主题里），就认领它并确保它在本房间，避免产生重复；否则新建一个 peer。
         """
         room_id = body.get("room_id")
         room = hub().store.get_room(room_id) if room_id else None
@@ -269,13 +269,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "房间不存在")
         name = body.get("name") or "Peer"
 
-        # 尝试认领已有的同名 peer 槽位。
+        # 全局按名字认领已有的同名 peer（与 /api/instances/connect 保持一致）。
         existing = next(
-            (
-                hub().store.get_agent(aid)
-                for aid in room.agent_ids
-                if (a := hub().store.get_agent(aid)) and a.kind == AgentKind.PEER and a.name == name
-            ),
+            (a for a in hub().store.agents.values()
+             if a.kind == AgentKind.PEER and a.name == name),
             None,
         )
         if existing:
@@ -286,6 +283,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             await hub().update_agent(existing.id, patch)
             await hub().mark_peer_seen(existing.id)
+            if existing.id not in room.agent_ids:
+                room.agent_ids.append(existing.id)
+                await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
             return {"agent_id": existing.id, "room_id": room_id, "color": existing.color,
                     "claimed": True}
 

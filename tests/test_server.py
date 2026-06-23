@@ -133,6 +133,27 @@ def test_invite_pulls_instance_by_role(tmp_path):
         assert any(m["role"] == "system" and "web端" in m["content"] for m in msgs)
 
 
+def test_connect_then_join_reuses_same_instance(tmp_path):
+    with _client(tmp_path) as client:
+        # 实例先 connect 全局上线，再 join_room 加入房间——应复用同一实例，不产生重复。
+        c = client.post(
+            "/api/instances/connect", json={"name": "tqiu", "role": "后端"}
+        ).json()
+        room = client.post("/api/rooms", json={"name": "大厅"}).json()
+        j = client.post(
+            "/api/peers",
+            json={"room_id": room["id"], "name": "tqiu", "repo_path": "/x"},
+        ).json()
+        assert j["claimed"] is True
+        assert j["agent_id"] == c["agent_id"]
+
+        state = client.get("/api/state").json()
+        peers = [a for a in state["agents"] if a["kind"] == "peer"]
+        assert len(peers) == 1, "同名实例 connect+join 不应产生重复"
+        room_state = next(r for r in state["rooms"] if r["id"] == room["id"])
+        assert c["agent_id"] in room_state["agent_ids"]
+
+
 def test_instance_wait_is_cross_room(tmp_path):
     with _client(tmp_path) as client:
         inst = client.post(

@@ -35,6 +35,8 @@ createApp({
       reconnectTimer: null,
       wasConnected: false,
       modal: { title: "", fields: [], values: {}, onSave: null },
+      // @提及自动补全：open 是否显示、items 候选、index 高亮项、start 输入框里 @ 的下标。
+      mention: { open: false, items: [], index: 0, start: -1 },
     };
   },
 
@@ -66,6 +68,16 @@ createApp({
     },
     fmtTime(ts) {
       return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+    },
+    escapeHtml(s) {
+      const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => map[c]);
+    },
+    // 先转义再高亮 @点名（与服务端 MENTION_RE 等价：字母/数字/下划线/连字符 + 中文）。
+    renderContent(text) {
+      return this.escapeHtml(text).replace(
+        /@([\w一-鿿-]+)/g, '<span class="mention">@$1</span>',
+      );
     },
     statusText(s) { return { idle: "空闲", running: "进行中", paused: "已暂停" }[s] || s; },
     statusLabel(a) {
@@ -216,6 +228,69 @@ createApp({
       const el = e.target;
       el.style.height = "auto";
       el.style.height = Math.min(el.scrollHeight, 140) + "px";
+    },
+
+    // ----- @提及自动补全（模仿 IM）-----
+    onComposerInput(e) {
+      this.autoGrow(e);
+      // 中文输入法拼音组字途中先不弹菜单，避免回车确认候选时误触发选择。
+      if (e.isComposing) return;
+      this.updateMention(e.target);
+    },
+    onComposerKeydown(e) {
+      if (e.isComposing) return;                    // 组字中的回车交给输入法
+      if (this.mention.open) {
+        if (e.key === "ArrowDown") { e.preventDefault(); return this.moveMention(1); }
+        if (e.key === "ArrowUp") { e.preventDefault(); return this.moveMention(-1); }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          return this.applyMention(this.mention.items[this.mention.index]);
+        }
+        if (e.key === "Escape") { e.preventDefault(); return this.closeMention(); }
+      }
+      // 回车发送，Shift/Ctrl/Alt/Meta + 回车则换行（等价于原 .enter.exact）。
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    },
+    onComposerBlur() { this.closeMention(); },
+    updateMention(el) {
+      const pos = el.selectionStart;
+      // 直接读 el.value（v-model 更新 draft 可能慢一拍）。光标前文本里，最近一个
+      // 「行首或空白后的 @」到光标之间若无空白，即正在输入提及。
+      const m = /(?:^|\s)@([^\s@]*)$/.exec(el.value.slice(0, pos));
+      if (!m) return this.closeMention();
+      const query = m[1].toLowerCase();
+      const items = this.roomAgents
+        .filter((a) => a.name.toLowerCase().includes(query) || (a.role || "").toLowerCase().includes(query))
+        .slice(0, 8);
+      if (!items.length) return this.closeMention();
+      this.mention = { open: true, items, index: 0, start: pos - m[1].length - 1 };
+    },
+    moveMention(d) {
+      const n = this.mention.items.length;
+      if (n) this.mention.index = (this.mention.index + d + n) % n;
+    },
+    applyMention(agent) {
+      if (!this.mention.open || !agent) return;
+      const el = this.$refs.composer;
+      const pos = el ? el.selectionStart : this.draft.length;
+      const before = this.draft.slice(0, this.mention.start);
+      const insert = `@${agent.name} `;
+      this.draft = before + insert + this.draft.slice(pos);
+      this.closeMention();
+      this.$nextTick(() => {
+        if (!el) return;
+        const caret = (before + insert).length;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 140) + "px";
+      });
+    },
+    closeMention() {
+      this.mention = { open: false, items: [], index: 0, start: -1 };
     },
 
     // ----- 参与者 -----

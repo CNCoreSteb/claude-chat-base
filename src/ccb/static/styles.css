@@ -28,10 +28,13 @@ body { overflow: hidden; }
   padding: 14px 16px 6px;
   font-size: 12px;
   letter-spacing: 1px;
-  color: var(--bs-secondary-color);
+  /* 用 body-color 而非 secondary-color：深色模式下小标题（主题/实例/参与者）不再发灰难辨。 */
+  color: var(--bs-body-color);
 }
 
-.room-item { cursor: pointer; border-left: 3px solid transparent; }
+/* list-group-item-action 默认把文字设成 secondary-color（灰），这里拉回 body-color，
+   让房间名等主文本在深色模式下保持高对比；选中项仍由 .list-group-item.active 接管。 */
+.room-item { cursor: pointer; border-left: 3px solid transparent; color: var(--bs-body-color); }
 .room-item.active { border-left-color: var(--bs-primary); }
 .room-item:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: -2px; }
 
@@ -85,6 +88,33 @@ body { overflow: hidden; }
   background: var(--bs-primary-bg-subtle);
   border-color: var(--bs-primary-border-subtle);
 }
+/* 待命实例用 ask 发来的提问：醒目描边，提示"该去 CCB 控制台回答"。 */
+.msg--question .msg-text {
+  border-color: var(--bs-warning);
+  box-shadow: 0 0 0 1px var(--bs-warning) inset;
+}
+/* QQ 式引用回复：正文上方一条窄引用，标出这条在回应谁、原文摘要。 */
+.msg-quote {
+  display: flex; gap: 6px; align-items: baseline;
+  border-left: 3px solid var(--bs-primary);
+  background: var(--bs-tertiary-bg);
+  border-radius: 4px;
+  padding: 3px 10px;
+  margin-bottom: 4px;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--bs-secondary-color);
+}
+.msg-quote-sender { font-weight: 600; color: var(--bs-primary); flex-shrink: 0; }
+.msg-quote-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* @点名高亮：让"被点名"在长对话里一眼可见。 */
+.mention {
+  color: var(--bs-primary);
+  background: var(--bs-primary-bg-subtle);
+  border-radius: 4px;
+  padding: 0 3px;
+  font-weight: 600;
+}
 .stream-cursor::after {
   content: "▋";
   color: var(--bs-primary);
@@ -94,6 +124,25 @@ body { overflow: hidden; }
 @keyframes blink { 50% { opacity: 0; } }
 
 .composer textarea { resize: none; max-height: 140px; }
+
+/* @提及自动补全下拉：浮在输入框上方，模仿 IM 的 @ 面板。 */
+.mention-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px);
+  margin: 0; padding: 4px;
+  list-style: none;
+  max-height: 220px; overflow-y: auto;
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+}
+.mention-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 6px; cursor: pointer;
+}
+.mention-item.active { background: var(--bs-primary-bg-subtle); }
+.mention-name { font-weight: 600; min-width: 0; }
 
 @media (max-width: 820px) {
   .app-shell { grid-template-columns: 1fr; }

@@ -49,7 +49,7 @@
             :aria-current="r.id === currentRoomId ? 'true' : null" @click="selectRoom(r.id)"
             @keydown.enter.prevent="selectRoom(r.id)" @keydown.space.prevent="selectRoom(r.id)">
           <div class="fw-semibold">{{ r.name }}</div>
-          <div class="small text-secondary d-flex align-items-center gap-2">
+          <div class="small d-flex align-items-center gap-2 opacity-75">
             <span class="dot" :class="r.status" aria-hidden="true"></span>
             <span>{{ statusText(r.status) }} · {{ r.agent_ids.length }} 名成员</span>
           </div>
@@ -118,7 +118,8 @@
           <div style="font-size:42px">💬</div>
           <p>各仓库的 Claude Code 接入后，协作消息会实时显示在这里。<br>你也可以在下方以人类身份直接插话。</p>
         </div>
-        <div v-for="m in currentMessages" :key="m.id" class="msg" :class="['msg--' + m.role, { streaming: m.streaming }]">
+        <div v-for="m in currentMessages" :key="m.id" class="msg"
+             :class="['msg--' + m.role, { streaming: m.streaming, 'msg--question': m.meta && m.meta.is_question }]">
           <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
           <template v-else>
             <div class="avatar" :style="{ background: m.color || 'var(--bs-secondary-bg)' }">{{ initials(m.sender_name) }}</div>
@@ -126,18 +127,35 @@
               <div class="msg-head d-flex align-items-baseline gap-2">
                 <span class="fw-semibold" :style="{ color: m.color || 'var(--bs-body-color)' }">{{ m.sender_name }}</span>
                 <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
+                <span v-if="m.meta && m.meta.is_question" class="badge text-bg-warning">❓ 等你回答</span>
                 <span class="small text-secondary">{{ fmtTime(m.ts) }}</span>
               </div>
-              <div class="msg-text">{{ m.content }}<span v-if="m.streaming" class="stream-cursor"></span></div>
+              <div v-if="m.meta && m.meta.reply_to_sender" class="msg-quote">
+                <span class="msg-quote-sender">{{ m.meta.reply_to_sender }}</span>
+                <span class="msg-quote-text">{{ m.meta.reply_to_preview }}</span>
+              </div>
+              <div class="msg-text"><span v-html="renderContent(m.content)"></span><span v-if="m.streaming" class="stream-cursor"></span></div>
             </div>
           </template>
         </div>
       </div>
 
       <footer class="composer d-flex gap-2 px-4 py-3 border-top">
-        <textarea ref="composer" v-model="draft" rows="1" class="form-control"
-          placeholder="以人类身份插话…… 用 @名字 指定下一个发言者。（回车发送）"
-          @keydown.enter.exact.prevent="sendMessage" @input="autoGrow"></textarea>
+        <div class="mention-wrap flex-grow-1 position-relative">
+          <ul v-if="mention.open" class="mention-menu" role="listbox" aria-label="提及参与者">
+            <li v-for="(a, i) in mention.items" :key="a.id" role="option"
+                :class="['mention-item', { active: i === mention.index }]"
+                :aria-selected="i === mention.index"
+                @mousedown.prevent="applyMention(a)" @mouseenter="mention.index = i">
+              <span class="swatch" :style="{ background: a.color }"></span>
+              <span class="mention-name text-truncate">{{ a.name }}</span>
+              <span v-if="a.role" class="small text-secondary ms-auto ps-2">{{ a.role }}</span>
+            </li>
+          </ul>
+          <textarea ref="composer" v-model="draft" rows="1" class="form-control"
+            placeholder="以人类身份插话…… 打 @ 可提及参与者。（回车发送，Shift+回车换行）"
+            @keydown="onComposerKeydown" @input="onComposerInput" @blur="onComposerBlur"></textarea>
+        </div>
         <button class="btn btn-primary" @click="sendMessage">发送</button>
       </footer>
     </main>

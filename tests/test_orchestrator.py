@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from ccb.hub import Hub
 from ccb.models import Agent, AgentKind, Room, RoomStatus, Strategy
+
+# AI 自动对话（编排器循环）当前已停用：本项目暂时只专注于多 Claude Code 协作。
+# 这些测试针对的是被停用的功能，整体跳过；日后恢复 orchestrator.start() 时一并恢复。
+pytestmark = pytest.mark.skip(reason="AI 自动对话已暂时停用，本项目当前专注多 Claude Code 协作")
 
 
 async def _wait_for(predicate, timeout=5.0):

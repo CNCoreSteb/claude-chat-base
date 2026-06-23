@@ -6,14 +6,15 @@ const PALETTE = [
   "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#06b6d4",
   "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#3b82f6",
 ];
-const STRATEGY_OPTIONS = [
-  { label: "主持人（由模型挑选发言者）", value: "director" },
-  { label: "轮流发言", value: "round_robin" },
-];
-const KIND_OPTIONS = [
-  { label: "仓库 peer（接入真实 Claude Code）", value: "peer" },
-  { label: "AI 智能体（API 自动发言）", value: "ai" },
-];
+// —— 以下为 AI 智能体相关选项；AI 自动对话已暂时停用，本项目当前专注于多 Claude Code 协作。——
+// const STRATEGY_OPTIONS = [
+//   { label: "主持人（由模型挑选发言者）", value: "director" },
+//   { label: "轮流发言", value: "round_robin" },
+// ];
+// const KIND_OPTIONS = [
+//   { label: "仓库 peer（接入真实 Claude Code）", value: "peer" },
+//   { label: "AI 智能体（API 自动发言）", value: "ai" },
+// ];
 
 createApp({
   data() {
@@ -241,16 +242,14 @@ createApp({
       catch { /* api() 已弹出错误提示，弹窗保持打开 */ }
     },
     newRoom() {
+      // AI 自动对话停用：不再设置 发言方式/最大轮数（仅 AI 智能体相关）。
       this.openModal("新建主题", [
         { key: "name", label: "主题名称", value: "" },
         { key: "topic", label: "话题 / 目标", type: "textarea", value: "" },
-        { key: "strategy", label: "发言方式", type: "select", value: "director", options: STRATEGY_OPTIONS },
-        { key: "max_turns", label: "最大轮数", type: "number", value: 18 },
       ], async (v) => {
         // 新主题默认不预先拉入任何成员，由你按需用「实例」面板或「添加已有」加入。
         const room = await this.api("POST", "/api/rooms", {
-          name: v.name || "新主题", topic: v.topic, strategy: v.strategy,
-          max_turns: parseInt(v.max_turns) || 18, agent_ids: [],
+          name: v.name || "新主题", topic: v.topic, agent_ids: [],
         });
         this.selectRoom(room.id);
       });
@@ -259,45 +258,34 @@ createApp({
       this.openModal("编辑主题", [
         { key: "name", label: "主题名称", value: room.name },
         { key: "topic", label: "话题 / 目标", type: "textarea", value: room.topic },
-        { key: "strategy", label: "发言方式", type: "select", value: room.strategy, options: STRATEGY_OPTIONS },
-        { key: "max_turns", label: "最大轮数", type: "number", value: room.max_turns },
-        { key: "turn_delay", label: "每轮间隔（秒）", type: "number", value: room.turn_delay },
-      ], (v) => this.api("PATCH", `/api/rooms/${room.id}`, {
-        name: v.name, topic: v.topic, strategy: v.strategy,
-        max_turns: parseInt(v.max_turns) || room.max_turns,
-        turn_delay: parseFloat(v.turn_delay) || room.turn_delay,
-      }));
+      ], (v) => this.api("PATCH", `/api/rooms/${room.id}`, { name: v.name, topic: v.topic }));
     },
     newAgent() {
+      // 当前只新增「仓库 peer」槽位（AI 智能体已停用）。
       this.openModal("新增参与者", [
-        { key: "kind", label: "类型", type: "select", value: "peer", options: KIND_OPTIONS },
         { key: "name", label: "名称", value: "" },
         { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: "" },
         { key: "repo_path", label: "仓库本地路径（可选）", value: "" },
-        { key: "persona", label: "人设 / 仓库上下文（系统提示）", type: "textarea", value: "" },
+        { key: "persona", label: "仓库上下文 / 说明（可选）", type: "textarea", value: "" },
         { key: "color", label: "颜色", type: "color", value: PALETTE[Object.keys(this.agents).length % PALETTE.length] },
       ], async (v) => {
         const agent = await this.api("POST", "/api/agents", {
-          name: v.name || (v.kind === "peer" ? "仓库" : "智能体"),
-          kind: v.kind, role: v.role, repo_path: v.repo_path, persona: v.persona, color: v.color,
+          name: v.name || "仓库", kind: "peer",
+          role: v.role, repo_path: v.repo_path, persona: v.persona, color: v.color,
         });
         if (this.currentRoomId) await this.api("POST", `/api/rooms/${this.currentRoomId}/agents/${agent.id}`);
       });
     },
     editAgent(a) {
-      const fields = [
+      // AI 自动对话停用：不再编辑 温度（仅 AI 智能体相关）。
+      this.openModal("编辑参与者", [
         { key: "name", label: "名称", value: a.name },
         { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: a.role || "" },
         { key: "repo_path", label: "仓库本地路径（可选）", value: a.repo_path || "" },
-        { key: "persona", label: "人设 / 仓库上下文（系统提示）", type: "textarea", value: a.persona },
+        { key: "persona", label: "仓库上下文 / 说明（可选）", type: "textarea", value: a.persona },
         { key: "color", label: "颜色", type: "color", value: a.color },
-      ];
-      if (a.kind === "ai") {
-        fields.splice(4, 0, { key: "temperature", label: "温度", type: "number", value: a.temperature });
-      }
-      this.openModal("编辑参与者", fields, (v) => this.api("PATCH", `/api/agents/${a.id}`, {
+      ], (v) => this.api("PATCH", `/api/agents/${a.id}`, {
         name: v.name, role: v.role, repo_path: v.repo_path, persona: v.persona, color: v.color,
-        ...(a.kind === "ai" && v.temperature != null ? { temperature: parseFloat(v.temperature) } : {}),
       }));
     },
 

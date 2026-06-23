@@ -59,9 +59,12 @@
       </ul>
 
       <div class="server-card small text-secondary mt-auto m-3 p-3 border rounded">
-        <div>提供方 <span class="badge" :class="server.provider === 'anthropic' ? 'text-bg-success' : 'text-bg-warning'">{{ server.provider || 'mock' }}</span></div>
-        <div>模型：{{ server.default_model || '—' }}</div>
-        <div v-if="!server.has_api_key">提示：设置 CCB_ANTHROPIC_API_KEY 可启用真实智能体。</div>
+        <div>多 Claude Code 协作 · 本地运行</div>
+        <div>数据持久化于 <span class="font-monospace">.ccb/ccb.db</span></div>
+        <!-- AI 自动对话停用：隐藏 提供方/模型/API Key 提示
+        <div>提供方 <span class="badge">{{ server.provider }}</span></div>
+        <div>模型：{{ server.default_model }}</div>
+        -->
       </div>
     </aside>
 
@@ -73,12 +76,14 @@
           <p class="text-secondary small mb-0">{{ currentRoom ? currentRoom.topic : '' }}</p>
         </div>
         <div v-if="currentRoom" class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+          <!-- AI 自动对话已暂时停用：本项目当前专注于多 Claude Code 协作，故隐藏 轮数/开始/暂停/停止。
           <span class="text-secondary small font-monospace">第 {{ currentRoom.turn }}/{{ currentRoom.max_turns }} 轮</span>
           <button v-if="currentRoom.status !== 'running'" class="btn btn-sm btn-primary"
                   @click="roomAction('start')">{{ currentRoom.status === 'paused' ? '继续' : '开始' }}</button>
           <button v-else class="btn btn-sm btn-outline-light" @click="roomAction('pause')">暂停</button>
           <button v-if="currentRoom.status !== 'idle'" class="btn btn-sm btn-outline-secondary" @click="roomAction('stop')">停止</button>
-          <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')">重置</button>
+          -->
+          <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')" title="清空本主题消息">清空</button>
           <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
         </div>
       </header>
@@ -86,7 +91,7 @@
       <div class="transcript flex-grow-1 overflow-auto p-4" ref="transcript" @scroll="onScroll">
         <div v-if="!currentMessages.length" class="empty-state text-center text-secondary">
           <div style="font-size:42px">💬</div>
-          <p>点击<strong>开始</strong>观看智能体对话，或直接输入一句话引出话题。</p>
+          <p>各仓库的 Claude Code 接入后，协作消息会实时显示在这里。<br>你也可以在下方以人类身份直接插话。</p>
         </div>
         <div v-for="m in currentMessages" :key="m.id" class="msg" :class="['msg--' + m.role, { streaming: m.streaming }]">
           <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
@@ -130,9 +135,11 @@
             <div class="small" :class="statusClass(a)">{{ statusLabel(a) }}</div>
             <div v-if="a.kind === 'peer' && a.repo_path" class="small text-secondary font-monospace text-truncate">{{ a.repo_path }}</div>
           </div>
-          <button v-if="a.kind === 'peer'" class="btn btn-sm btn-link p-0 px-1 text-secondary" title="复制接入命令" @click="copyJoin(a)">⧉</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="复制接入命令" @click="copyJoin(a)">⧉</button>
+          <!-- AI 自动对话停用：移除 AI 智能体的静音开关
           <button v-else class="btn btn-sm btn-link p-0 px-1 text-secondary" :title="a.enabled ? '静音' : '取消静音'"
                   @click="patchAgent(a.id, { enabled: !a.enabled })">{{ a.enabled ? '🔵' : '⚪' }}</button>
+          -->
           <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="编辑" @click="editAgent(a)">✎</button>
           <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="移出主题" @click="removeFromRoom(a.id)">✕</button>
         </li>

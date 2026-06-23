@@ -1,5 +1,9 @@
 """LLM 提供方抽象层。
 
+⚠️ 休眠模块：仅供 API 驱动的 AI 智能体自动对话使用，而该功能当前已停用
+（见 orchestrator.py），本项目暂时只专注于多 Claude Code 协作。保留以便日后恢复。
+
+
 内置两种提供方：
 
 * ``AnthropicProvider``——通过官方 SDK 流式获取真实的 Claude 回复。

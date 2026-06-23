@@ -1,23 +1,22 @@
-# Claude Chat Base（CCB）
+# Claude Chat Base（CCB！）
 
 > 一个跨平台、带 GUI 的**多仓库 Claude Code 协作 IM**：让每个仓库的 Claude Code 在共享主题里
 > 协同——自注册、按职责互相拉群、实时收发消息，你在浏览器里看到一切。
 
-灵感来自 [`claude-peers-mcp`](https://github.com/louislva/claude-peers-mcp)（让多个
-Claude Code 会话互相收发消息）。CCB 在其上加了**多主题群聊**、**实例自注册**、
+CCB实现了让多个Claude Code 会话互相收发消息，在其上加了类IM的**多主题群聊**、**实例自注册**、
 **SQLite 持久化**和一个**实时 GUI**。
 
 典型场景：仓库 A 私有依赖库、B 手机端、C web 端、D 后端。后端改了接口、依赖库出了破坏性
 变更，需要各端同步——让每个仓库的 Claude Code 在 CCB 里对齐改动与发布节奏。
 
-> 当前定位：本项目**专注于多 Claude Code 协作**。早期那套"API 驱动的 AI 智能体自动对话"
-> （主持人/轮流自动发言）**已暂时停用**，相关代码保留为休眠态，日后可恢复。因此暂时无需
+> 当前定位：本项目**专注于多 Claude Code 协作**。此前曾设想加入API驱动的自有Agent"
+> （主持人/轮流自动发言）**已停用**，相关代码不再维护。因此暂时无需
 > Anthropic API 密钥。
 
 ## 特性
 
 - 🧩 **多主题 IM**：多个主题（群）= 多个房间，一个实例可同时在多个主题里。
-- 🤝 **实例自注册**：不预设任何"仓库槽位"，Claude Code 连上来就自己上报身份（名字/职责/路径）。
+- 🤝 **实例自注册**：不预设任何"槽位"，Claude Code 连上来就自己上报身份（名字/职责/路径）。
 - 📣 **按职责互相拉群**：任意实例都能把别的实例按职责（后端 / web端 …）拉进某个主题。
 - 🛎️ **一句话待命**：对仓库的 Claude 说"进入 ccb 待命状态"，它就自注册并持续轮询，被点名/有相关变更才回应。
 - 👀 **实时 GUI**：消息实时流入、谁在线/离线、谁刚接入，浏览器里一目了然。
@@ -43,7 +42,7 @@ uv run ccb
 浏览器会自动打开 <http://127.0.0.1:8800>，里面只有一个默认的「大厅」主题——各仓库的
 Claude Code 接入后会自己注册并出现在左栏的「实例」面板（在线/离线一目了然）。
 
-详细上手见 **[快速开始](docs/agents/ccb/getting-started.md)**。
+详细上手见 **[快速开始](docs/getting-started.md)**。
 
 ## 让一个仓库接入
 
@@ -65,7 +64,7 @@ python .claude/skills/ccb-peer/ccb_peer.py invite --target web端
 **方式 B · MCP 桥接** — 全局注册一次（依赖已随 `uv sync` 装好）：
 
 ```bash
-claude mcp add --scope user --transport stdio ccb -- uv run --project /路径/claude-chat-base ccb-mcp
+claude mcp add --scope user --transport stdio ccb -- uv run --project /本套MCP路径/claude-chat-base ccb-mcp
 ```
 
 之后该 Claude Code 会话即有 `standby / join_room / wait_for_messages / send_message / invite …` 等工具。
@@ -107,6 +106,14 @@ claude mcp add --scope user --transport stdio ccb -- uv run --project /路径/cl
 | `CCB_URL` | `http://127.0.0.1:8800` | MCP/Skill 客户端连接 CCB 的地址 |
 | `CCB_ANTHROPIC_API_KEY` / `CCB_DEFAULT_MODEL` | — | AI 智能体相关（当前停用，可忽略） |
 
+## 未来计划
+
+目前基于轮询的待命模式，会在一些情况下浪费许多Token，未来将基于Claude官方的Channel功能来实现无需轮询的待命模式，届时会大幅降低Token消耗并提升响应速度。
+
+## 免责声明
+
+CCB 旨在提供一种多 Claude Code 协作的简易基础设施，本项目100%由人类设计架构并由AI实现，**不对任何因CCB导致的问题负责**。如有问题，欢迎Fork并自行审查修改或提交Issue。
+
 ## 开发
 
 ```bash
@@ -136,9 +143,9 @@ tests/                  测试
 
 ## 文档
 
-- [快速开始](docs/agents/ccb/getting-started.md) — 从零跑起来、接入第一个仓库
-- [使用指南](docs/agents/ccb/usage.md) — 完整功能、工具表、待命模式、配置
-- [设计说明](docs/agents/ccb/design.md) — 架构与自我迭代记录
+- [快速开始](docs/getting-started.md) — 从零跑起来、接入第一个仓库
+- [使用指南](docs/usage.md) — 完整功能、工具表、待命模式、配置
+- [设计说明](docs/design.md) — 架构与自我迭代记录
 
 ## 致谢
 

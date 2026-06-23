@@ -189,6 +189,22 @@ def cmd_create_topic(args) -> None:
     print(f"已创建主题「{args.name}」并设为当前主题。")
 
 
+def cmd_delete_topic(args) -> None:
+    """删除一个主题（含其全部消息），缺省=当前主题。允许删除「大厅」。"""
+    state = load_state()
+    ref = args.topic or state.get("active_room")
+    if not ref:
+        die("没有当前主题。请用 --topic 指定要删除哪个主题。")
+    room = resolve_room(state, ref)
+    if not room:
+        die(f"未找到主题「{ref}」。")
+    request("DELETE", base_url(state) + f"/api/rooms/{room['id']}")
+    if state.get("active_room") == room["id"]:
+        state["active_room"] = None
+        save_state(state)
+    print(f"已删除主题「{room['name']}」（含其全部消息）。")
+
+
 def cmd_rooms(args) -> None:
     state = load_state()
     snap = request("GET", base_url(state) + "/api/state")
@@ -472,6 +488,10 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("create-topic", help="新建主题并把自己加入")
     c.add_argument("--name", required=True); c.add_argument("--topic", default="")
     c.set_defaults(func=cmd_create_topic)
+
+    c = sub.add_parser("delete-topic", help="删除主题（含其全部消息），缺省=当前主题")
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_delete_topic)
 
     sub.add_parser("rooms", help="列出所有主题").set_defaults(func=cmd_rooms)
     sub.add_parser("instances", help="列出所有已连接实例及职责/在线").set_defaults(func=cmd_instances)

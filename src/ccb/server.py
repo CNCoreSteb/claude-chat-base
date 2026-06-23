@@ -162,6 +162,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "房间不存在")
         return room.model_dump()
 
+    @app.delete("/api/rooms/{room_id}")
+    async def delete_room(room_id: str) -> dict:
+        """删除一个主题（含其全部消息）。允许删除任何主题，包括「大厅」。"""
+        if not await hub().delete_room(room_id):
+            raise HTTPException(404, "房间不存在")
+        return {"ok": True, "room_id": room_id}
+
     @app.post("/api/rooms/{room_id}/agents/{agent_id}")
     async def add_room_agent(room_id: str, agent_id: str) -> dict:
         room = hub().store.get_room(room_id)

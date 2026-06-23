@@ -37,6 +37,9 @@ body { overflow: hidden; }
 .room-item { cursor: pointer; border-left: 3px solid transparent; color: var(--bs-body-color); }
 .room-item.active { border-left-color: var(--bs-primary); }
 .room-item:focus-visible { outline: 2px solid var(--bs-primary); outline-offset: -2px; }
+/* 主题「删除」按钮：平时隐藏，悬停/选中/聚焦该主题时浮现（与消息「回复」按钮同款）。 */
+.room-del { opacity: 0; transition: opacity 0.15s ease; flex-shrink: 0; }
+.room-item:hover .room-del, .room-item.active .room-del, .room-del:focus-visible { opacity: 1; }
 
 /* ----- 状态点 / 色块 ----- */
 .dot {

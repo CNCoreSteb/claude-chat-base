@@ -48,7 +48,12 @@
             :class="{ active: r.id === currentRoomId }" role="button" tabindex="0"
             :aria-current="r.id === currentRoomId ? 'true' : null" @click="selectRoom(r.id)"
             @keydown.enter.prevent="selectRoom(r.id)" @keydown.space.prevent="selectRoom(r.id)">
-          <div class="fw-semibold">{{ r.name }}</div>
+          <div class="d-flex align-items-center gap-2">
+            <div class="fw-semibold flex-grow-1 text-truncate">{{ r.name }}</div>
+            <button class="btn btn-sm btn-link p-0 px-1 text-secondary room-del"
+                    :aria-label="'删除主题 ' + r.name" title="删除主题（含全部消息）"
+                    @click.stop="deleteRoom(r)" @keydown.enter.stop>✕</button>
+          </div>
           <div class="small d-flex align-items-center gap-2 opacity-75">
             <span class="dot" :class="r.status" aria-hidden="true"></span>
             <span>{{ statusText(r.status) }} · {{ r.agent_ids.length }} 名成员</span>

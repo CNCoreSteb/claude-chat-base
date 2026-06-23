@@ -140,6 +140,14 @@ class Store:
     def get_room(self, room_id: str) -> Room | None:
         return self.rooms.get(room_id)
 
+    def remove_room(self, room_id: str) -> None:
+        """删除一个主题（房间）及其全部消息。"""
+        self.rooms.pop(room_id, None)
+        with self._lock:
+            self._conn.execute("DELETE FROM rooms WHERE id=?", (room_id,))
+            self._conn.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
+            self._conn.commit()
+
     def rooms_for_agent(self, agent_id: str) -> list[Room]:
         return [r for r in self.rooms.values() if agent_id in r.agent_ids]
 

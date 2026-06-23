@@ -178,6 +178,16 @@ createApp({
           break;
         case "room_status": { const r = this.rooms[ev.room_id]; if (r) { r.status = ev.status; r.turn = ev.turn; } break; }
         case "room_reset": this.messages[ev.room_id] = []; break;
+        case "room_removed": {
+          delete this.rooms[ev.room_id];
+          delete this.messages[ev.room_id];
+          if (this.currentRoomId === ev.room_id) {
+            this.currentRoomId = Object.keys(this.rooms)[0] || null;
+            this.replyTo = null;
+            this.closeMention();
+          }
+          break;
+        }
         case "message": this.addMessage(ev.message, false); break;
         case "message_start": this.addMessage(ev.message, true); break;
         case "message_delta": this.appendDelta(ev.message_id, ev.delta); break;
@@ -248,6 +258,12 @@ createApp({
     },
     async roomAction(action) {
       if (this.currentRoom) await this.api("POST", `/api/rooms/${this.currentRoom.id}/${action}`);
+    },
+    deleteRoom(room) {
+      if (!room) return;
+      if (confirm(`删除主题「${room.name}」？该主题的全部消息也会一并删除，且不可恢复。`)) {
+        this.api("DELETE", `/api/rooms/${room.id}`).catch(() => {});
+      }
     },
 
     // ----- 输入框 -----

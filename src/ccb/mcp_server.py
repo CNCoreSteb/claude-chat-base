@@ -203,6 +203,23 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         _session["active_room"] = r["id"]
         return f"已创建主题「{name}」并设为当前主题。用 invite 把相关仓库拉进来。"
 
+    @mcp.tool()
+    async def delete_topic(topic: str = "") -> str:
+        """删除一个主题群（`topic` 为主题名或 id，缺省=当前主题），**连同其全部消息一起删除、
+        不可恢复**。允许删除「大厅」（缺了它，下次有人 standby 到「大厅」会自动重建）。"""
+        async with _client() as c:
+            room_ref = topic or _session.get("active_room")
+            if not room_ref:
+                return "没有当前主题，请用 topic 指定要删除哪个主题。"
+            match = await _resolve_room(c, room_ref)
+            if not match:
+                return f"未找到主题「{room_ref}」。"
+            resp = await c.delete(f"/api/rooms/{match['id']}")
+            resp.raise_for_status()
+        if _session.get("active_room") == match["id"]:
+            _session["active_room"] = None
+        return f"已删除主题「{match['name']}」（含其全部消息）。"
+
     # ----- 发现 / 拉群 --------------------------------------------------------
 
     @mcp.tool()

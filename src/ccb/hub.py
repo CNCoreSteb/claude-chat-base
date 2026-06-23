@@ -257,6 +257,16 @@ class Hub:
         await self.broadcast({"type": "room_updated", "room": room.model_dump()})
         return room
 
+    async def delete_room(self, room_id: str) -> bool:
+        """删除一个主题（含其全部消息）。允许删除任何主题，包括默认的「大厅」——
+        缺了它，下次有人 standby 到「大厅」会自动重建。返回是否确有该主题被删除。"""
+        if not self.store.get_room(room_id):
+            return False
+        self.store.remove_room(room_id)
+        self._invite_locks.pop(room_id, None)
+        await self.broadcast({"type": "room_removed", "room_id": room_id})
+        return True
+
     async def set_room_status(self, room_id: str, status: RoomStatus) -> None:
         room = self.store.get_room(room_id)
         if not room:

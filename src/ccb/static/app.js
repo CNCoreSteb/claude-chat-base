@@ -46,12 +46,25 @@ createApp({
     roomList() { return Object.values(this.rooms); },
     currentRoom() { return this.rooms[this.currentRoomId] || null; },
     currentMessages() { return this.messages[this.currentRoomId] || []; },
-    // 当前主题里被引用回复过的消息 id 集合——提问被回复后据此把"等你回答"翻成"已回复"。
+    // 当前主题里被引用回复过的消息 id 集合。
     repliedToIds() {
       const s = new Set();
       for (const m of this.currentMessages) {
         const rid = m.meta && m.meta.reply_to;
         if (rid) s.add(rid);
+      }
+      return s;
+    },
+    // 被视为"已回复"的提问：被引用回复过，或其后本主题出现过任何人类发言（ask 在收到
+    // 下一条 human 消息时即返回，普通直接回答也应让"❓ 等你回答"翻成"✅ 已回复"）。
+    answeredQuestionIds() {
+      const s = new Set(this.repliedToIds);
+      let lastHumanTs = -Infinity;
+      for (const m of this.currentMessages) {
+        if (m.role === "human") lastHumanTs = Math.max(lastHumanTs, m.ts);
+      }
+      for (const m of this.currentMessages) {
+        if (m.meta && m.meta.is_question && m.ts < lastHumanTs) s.add(m.id);
       }
       return s;
     },
@@ -84,10 +97,11 @@ createApp({
       const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
       return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => map[c]);
     },
-    // 先转义再高亮 @点名（与服务端 MENTION_RE 等价：字母/数字/下划线/连字符 + 中文）。
+    // 先转义再高亮 @点名。用 Unicode 属性（\p{L}\p{N}）对齐服务端 Python 的 `@([\w-]+)`
+    // （Python \w 是 Unicode 感知的），从而日/韩/带重音等非 CJK 名字也能正确高亮，不再与服务端解析口径不一致。
     renderContent(text) {
       return this.escapeHtml(text).replace(
-        /@([\w一-鿿-]+)/g, '<span class="mention">@$1</span>',
+        /@([\p{L}\p{N}_-]+)/gu, '<span class="mention">@$1</span>',
       );
     },
     statusText(s) { return { idle: "空闲", running: "进行中", paused: "已暂停" }[s] || s; },
@@ -125,7 +139,12 @@ createApp({
     connect() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(`${proto}://${location.host}/ws`);
-      ws.onmessage = (e) => this.handleEvent(JSON.parse(e.data));
+      ws.onmessage = (e) => {
+        // 守卫畸形帧：解析失败时忽略这一帧，别让异常打断 onmessage、丢掉后续事件。
+        let ev;
+        try { ev = JSON.parse(e.data); } catch { return; }
+        this.handleEvent(ev);
+      };
       ws.onopen = () => {
         this.reconnectDelay = 1200;
         if (this.wasConnected) this.toast("已重连");
@@ -181,7 +200,10 @@ createApp({
     addMessage(msg, streaming) {
       const m = { ...msg, streaming: !!streaming };
       if (!this.messages[m.room_id]) this.messages[m.room_id] = [];
-      this.messages[m.room_id].push(m);
+      const list = this.messages[m.room_id];
+      list.push(m);
+      // 限制单主题在内存里保留的消息数，避免长会话无界增长（历史仍在服务端，刷新即重新快照）。
+      if (list.length > 2000) list.splice(0, list.length - 2000);
       if (m.room_id === this.currentRoomId && this.stick) this.$nextTick(() => this.scrollToBottom());
     },
     appendDelta(id, delta) {

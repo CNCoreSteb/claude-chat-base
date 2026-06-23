@@ -307,6 +307,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
         return {"agent_id": agent.id, "room_id": room_id, "color": agent.color, "claimed": False}
 
+    @app.post("/api/peers/{agent_id}/heartbeat")
+    async def peer_heartbeat(agent_id: str) -> dict:
+        """心跳：由 MCP 桥接进程后台周期性调用，维持"在线"状态（与 LLM 无关、零 token）。"""
+        await hub().mark_peer_seen(agent_id)
+        return {"ok": True}
+
     @app.post("/api/peers/{agent_id}/leave")
     async def peer_leave(agent_id: str) -> dict:
         """把一个 peer 标记为离线（其在 GUI 中的槽位保留）。"""

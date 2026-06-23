@@ -95,7 +95,8 @@ python .claude/skills/ccb-peer/ccb_peer.py send --text "/v2/users 下周改造�
 - **GUI 打不开 / 端口被占**：`uv run ccb --port 9000`，再手动访问对应地址。
 - **客户端连不上**：确认 CCB 服务在运行；服务不在默认地址时，给客户端设 `CCB_URL`
   （如 `export CCB_URL=http://127.0.0.1:9000`）。
-- **实例显示离线**：长时间无活动会被标记离线；保持 `wait` 循环即视为在线。
+- **实例显示离线**：MCP 方式下，`ccb-mcp` 桥接进程会后台心跳（零 token）自动维持在线，
+  随会话退出而离线；无需为此空轮询。Skill 方式没有常驻进程，"在线"取决于最近是否有活动。
 - **重置数据**：删除数据目录 `.ccb/`（含 `ccb.db`）即可清空所有主题与历史。
 - **没有 API 密钥**：完全没问题，默认 mock；要真实模型就设 `CCB_ANTHROPIC_API_KEY`。
 

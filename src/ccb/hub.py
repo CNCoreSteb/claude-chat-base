@@ -28,8 +28,9 @@ from .store import Store
 
 log = logging.getLogger("ccb.hub")
 
-# 超过这么多秒没有任何活动，就把 peer 视为离线。
-PEER_STALE_SECONDS = 40.0
+# 超过这么多秒没收到心跳/活动，就把 peer 视为离线。
+# MCP 桥接进程每 ~15 秒后台心跳一次（零 token），这里取约 3 拍的容忍度。
+PEER_STALE_SECONDS = 45.0
 
 
 class Hub:

@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import httpx
 
 BASE_URL = os.environ.get("CCB_URL", "http://127.0.0.1:8800").rstrip("/")
+HEARTBEAT_INTERVAL = 15.0  # 秒；由桥接进程后台发送，与 LLM 无关、零 token。
 
 # 每个会话的状态（每个 Claude Code 会话对应一个 MCP 服务进程）。
 _session: dict[str, object] = {"agent_id": None, "name": None, "active_room": None, "last_ts": 0.0}
@@ -28,6 +31,42 @@ _session: dict[str, object] = {"agent_id": None, "name": None, "active_room": No
 
 def _client(timeout: float = 15.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=BASE_URL, timeout=timeout)
+
+
+async def _heartbeat_loop() -> None:
+    """后台心跳：只要本会话已加入（有 agent_id），就周期性告诉服务端"我还在线"。
+
+    这是**桥接进程**在做的事——不需要 LLM 调用任何工具、不消耗任何 token。它代表
+    "这个 Claude Code 会话仍连着 CCB"，正是"在线"应有的含义。
+    """
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        aid = _session.get("agent_id")
+        if not aid:
+            continue
+        try:
+            async with _client(8) as c:
+                await c.post(f"/api/peers/{aid}/heartbeat")
+        except Exception:  # noqa: BLE001 - 服务未启动/网络抖动：忽略，下一拍再试
+            pass
+
+
+@asynccontextmanager
+async def _lifespan(_server):  # noqa: ANN001 - FastMCP 生命周期钩子
+    # 桥接进程一启动就跑后台心跳；进程随 Claude Code 会话存活/退出。
+    task = asyncio.create_task(_heartbeat_loop())
+    try:
+        yield {}
+    finally:
+        task.cancel()
+        # 会话正常结束时立即下线；崩溃/被强杀则由服务端的"过期检查"兜底标记离线。
+        aid = _session.get("agent_id")
+        if aid:
+            try:
+                async with _client(5) as c:
+                    await c.post(f"/api/peers/{aid}/leave")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def _resolve_room(c: httpx.AsyncClient, ref: str) -> dict | None:
@@ -45,7 +84,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             "peer 桥接需要安装 'mcp' 包。\n请执行：  uv sync\n"
         ) from exc
 
-    mcp = FastMCP("ccb-peers")
+    mcp = FastMCP("ccb-peers", lifespan=_lifespan)
 
     # ----- 上线 / 加入 --------------------------------------------------------
 

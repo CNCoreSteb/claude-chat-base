@@ -133,6 +133,17 @@ def test_invite_pulls_instance_by_role(tmp_path):
         assert any(m["role"] == "system" and "web端" in m["content"] for m in msgs)
 
 
+def test_heartbeat_marks_peer_online(tmp_path):
+    with _client(tmp_path) as client:
+        # 心跳由桥接进程后台发送（零 token），用于维持在线状态。
+        peer = client.post("/api/agents", json={"name": "x", "kind": "peer"}).json()
+        assert peer["online"] is False
+        client.post(f"/api/peers/{peer['id']}/heartbeat")
+        state = client.get("/api/state").json()
+        a = next(x for x in state["agents"] if x["id"] == peer["id"])
+        assert a["online"] is True
+
+
 def test_connect_then_join_reuses_same_instance(tmp_path):
     with _client(tmp_path) as client:
         # 实例先 connect 全局上线，再 join_room 加入房间——应复用同一实例，不产生重复。

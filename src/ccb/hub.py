@@ -8,7 +8,6 @@ WebSocket 客户端。所有 GUI 关心的状态变更都经由某个 ``*`` 辅�
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import Any
@@ -31,9 +30,6 @@ log = logging.getLogger("ccb.hub")
 
 # 超过这么多秒没有任何活动，就把 peer 视为离线。
 PEER_STALE_SECONDS = 40.0
-# 配置中不应持久化的运行期字段。
-_AGENT_RUNTIME_FIELDS = {"status", "online", "last_seen"}
-_ROOM_RUNTIME_FIELDS = {"status", "turn"}
 
 
 class Hub:
@@ -46,18 +42,13 @@ class Hub:
         # 编排器在构造之后再注入，避免循环导入。
         self.orchestrator: Any | None = None
 
-    # ----- 启动引导与持久化 --------------------------------------------------
-
-    @property
-    def config_path(self):  # noqa: ANN201
-        return self.settings.data_dir / "config.json"
+    # ----- 启动引导 ----------------------------------------------------------
 
     def bootstrap(self) -> None:
-        """加载状态：优先读用户保存的 config.json，否则用预设并立即保存。"""
-        if self.load_config():
+        """加载状态：SQLite 里已有配置则直接用，否则导入预设（会写入 DB）。"""
+        if self.store.agents or self.store.rooms:
             log.info(
-                "已从 %s 加载 %d 个智能体、%d 个房间",
-                self.config_path,
+                "已从数据库加载 %d 个智能体、%d 个房间",
                 len(self.store.agents),
                 len(self.store.rooms),
             )
@@ -67,41 +58,7 @@ class Hub:
             self.store.add_agent(agent)
         for room in rooms:
             self.store.add_room(room)
-        self.save_config()
-        log.info("已从预设加载 %d 个智能体、%d 个房间", len(agents), len(rooms))
-
-    def load_config(self) -> bool:
-        if not self.config_path.exists():
-            return False
-        try:
-            data = json.loads(self.config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            log.exception("读取 %s 失败，回退到预设", self.config_path)
-            return False
-        for ad in data.get("agents", []):
-            self.store.add_agent(Agent(**ad))  # 运行期字段用默认值
-        for rd in data.get("rooms", []):
-            self.store.add_room(Room(**rd))
-        return True
-
-    def save_config(self) -> None:
-        """把智能体与房间配置（不含运行期字段）写盘，使 GUI 中的设置持久化。"""
-        data = {
-            "agents": [
-                {k: v for k, v in a.model_dump().items() if k not in _AGENT_RUNTIME_FIELDS}
-                for a in self.store.agents.values()
-            ],
-            "rooms": [
-                {k: v for k, v in r.model_dump().items() if k not in _ROOM_RUNTIME_FIELDS}
-                for r in self.store.rooms.values()
-            ],
-        }
-        try:
-            self.config_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError:
-            log.exception("写入 %s 失败", self.config_path)
+        log.info("已从预设导入 %d 个智能体、%d 个房间", len(agents), len(rooms))
 
     # ----- 提供方 ----------------------------------------------------------
 
@@ -154,8 +111,8 @@ class Hub:
             "agents": [a.model_dump() for a in self.store.agents.values()],
             "rooms": [r.model_dump() for r in self.store.rooms.values()],
             "messages": {
-                rid: [m.model_dump() for m in msgs]
-                for rid, msgs in self.store.messages.items()
+                room.id: [m.model_dump() for m in self.store.recent(room.id)]
+                for room in self.store.rooms.values()
             },
             "server": {
                 "provider": self.settings.resolved_provider(),
@@ -178,7 +135,6 @@ class Hub:
         if agent.model is None:
             agent.model = self.settings.default_model
         self.store.add_agent(agent)
-        self.save_config()
         await self.broadcast({"type": "agent_added", "agent": agent.model_dump()})
         return agent
 
@@ -188,13 +144,12 @@ class Hub:
             return None
         for field, value in data.model_dump(exclude_none=True).items():
             setattr(agent, field, value)
-        self.save_config()
+        self.store.upsert_agent(agent)
         await self.broadcast({"type": "agent_updated", "agent": agent.model_dump()})
         return agent
 
     async def delete_agent(self, agent_id: str) -> None:
         self.store.remove_agent(agent_id)
-        self.save_config()
         await self.broadcast({"type": "agent_removed", "agent_id": agent_id})
 
     async def set_agent_status(self, agent_id: str, status: str) -> None:
@@ -238,7 +193,6 @@ class Hub:
         room = Room(**data.model_dump())
         room.turn_delay = room.turn_delay or self.settings.turn_delay
         self.store.add_room(room)
-        self.save_config()
         await self.broadcast({"type": "room_added", "room": room.model_dump()})
         return room
 
@@ -248,7 +202,7 @@ class Hub:
             return None
         for field, value in data.model_dump(exclude_none=True).items():
             setattr(room, field, value)
-        self.save_config()
+        self.store.upsert_room(room)
         await self.broadcast({"type": "room_updated", "room": room.model_dump()})
         return room
 

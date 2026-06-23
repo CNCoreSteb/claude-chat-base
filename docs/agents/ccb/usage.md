@@ -46,22 +46,39 @@
 6. **观看协同**。各仓库 Claude 之间的消息会实时流入 GUI；你也可以在底部输入框以人类
    身份插话，用 `@后端` 之类点名某个参与者。
 
-## MCP 桥接提供的工具
+## MCP 桥接提供的工具（IM 式协同）
 
-每个仓库的 Claude Code 通过这些工具参与协同：
+每个仓库的 Claude Code 通过这些工具参与协同。多个主题（群）= 多个房间，一个实例可
+同时在多个主题里。
 
 | 工具 | 作用 |
 | --- | --- |
-| `list_rooms` | 列出房间及其中的仓库槽位（含在线状态） |
-| `join_room(room, name, role?, repo_path?)` | 加入房间；同名时**认领**已配置的槽位 |
-| `send_message(content)` | 向房间发消息，所有 peer 与 GUI 即时可见 |
-| `wait_for_messages(timeout?)` | **长轮询**，阻塞至有新消息再返回（高效跟进） |
-| `read_messages()` | 立即读取上次之后的新消息（不阻塞） |
-| `list_peers()` | 列出房间里的仓库参与者及在线状态 |
-| `leave_room()` | 标记离线（GUI 中的槽位保留） |
+| `connect(name, role?, repo_path?)` | 全局上线，声明职责（不必先进任何主题） |
+| `join_room(room, name?, role?, repo_path?)` | 加入某主题；同名时**认领**已配置槽位 |
+| `create_topic(name, topic?)` | 新建一个主题群并把自己加入 |
+| `list_rooms()` | 列出所有主题群 |
+| `list_instances()` | **发现**其他已连接实例及其职责/在线/所在主题 |
+| `invite(target, topic?)` | 按**职责或名字**把另一实例拉进某主题（核心能力） |
+| `send_message(content, topic?)` | 发言（缺省发到当前主题） |
+| `wait_for_messages(timeout?)` | **跨主题长轮询**，所在任一群有新消息即返回 |
+| `read_messages()` | 立即读取所在全部主题的新消息（不阻塞） |
+| `list_peers(topic?)` | 列出某主题的参与者及在线状态 |
+| `leave_room(topic?)` / `disconnect()` | 退出某主题 / 全局下线 |
 
-**推荐的协同循环**：让每个仓库的 Claude `join_room` 后，反复 `wait_for_messages`
-监听；当消息与本仓库相关、或被点名时，做出对应改动并 `send_message` 回应。
+### 实例互相"按职责拉群"
+
+这正是你要的能力：任何已连接的实例都能把别的实例按职责拉进群。例如后端临时要拉一次
+发布协调：
+
+> 后端的 Claude：`create_topic("发布协调-v2接口")`，然后 `invite("web端")`、
+> `invite("手机端")`、`invite("依赖库")`，再 `send_message("/v2/users 下周改造，请各端评估影响")`。
+
+被拉进来的实例只要在跑 `wait_for_messages` 循环，就会立刻收到"被拉入新主题"的系统提示
+与后续消息——因为 `wait_for_messages` 是**跨主题**的。
+
+**推荐的协同循环**：每个仓库的 Claude `connect`/`join_room` 后，反复
+`wait_for_messages` 监听；消息与本仓库相关或被点名时，做出对应改动并 `send_message`
+回应；需要谁参与时用 `invite` 把对方按职责拉进来。
 
 如果 CCB 不在默认地址，设置 `CCB_URL`（例如 `http://127.0.0.1:8800`）。
 
@@ -90,13 +107,13 @@
 | `CCB_DATA_DIR` | `.ccb` | 配置（config.json）+ 对话记录 |
 | `CCB_URL` | `http://127.0.0.1:8800` | MCP 桥接连接 CCB 的地址 |
 
-### 持久化与数据
+### 持久化与数据（SQLite）
 
-- 你在 GUI 里配置的仓库槽位/房间会写入 `CCB_DATA_DIR/config.json`，**重启后自动恢复**；
-  首次启动会把内置预设写入该文件，之后即以你的修改为准。
-- 每个房间的完整对话历史追加写入 `CCB_DATA_DIR/transcripts/<room_id>.jsonl`，可离线
-  回放或分析。
-- 一切均在本地运行。
+- 智能体、主题（房间）、以及**全部聊天记录**都存在本地 SQLite：`CCB_DATA_DIR/ccb.db`
+  （WAL 模式）。你在 GUI 里的配置与所有消息**重启后自动恢复**。
+- 首次启动若数据库为空，会导入内置预设；之后即以数据库内容为准。
+- 多主题、可回放：每条消息按主题与时间入库，支持分页与跨主题查询。
+- 一切均在本地运行，无需任何外部数据库引擎。
 
 ## 不带真实仓库，先体验一下
 

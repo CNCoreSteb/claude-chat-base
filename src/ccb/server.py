@@ -65,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             reconcile_task.cancel()
             await hub.orchestrator.shutdown()
+            hub.store.close()
 
     app = FastAPI(title="Claude Chat Base", version="0.1.0", lifespan=lifespan)
 
@@ -282,6 +283,120 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().set_peer_offline(agent_id)
         return {"ok": True}
 
+    # ----- 实例（跨房间的连接与拉群） -----------------------------------------
+
+    def _instance_dump(agent: Agent) -> dict:
+        d = agent.model_dump()
+        d["rooms"] = [
+            {"id": r.id, "name": r.name}
+            for r in hub().store.rooms_for_agent(agent.id)
+        ]
+        return d
+
+    @app.get("/api/instances")
+    async def list_instances(online: bool = False) -> list[dict]:
+        """列出所有 peer 实例（即各仓库的 Claude Code）。online=true 时只列在线的。"""
+        out = []
+        for a in hub().store.agents.values():
+            if a.kind != AgentKind.PEER:
+                continue
+            if online and not a.online:
+                continue
+            out.append(_instance_dump(a))
+        return out
+
+    @app.post("/api/instances/connect")
+    async def connect_instance(body: dict) -> dict:
+        """让一个 Claude Code 实例全局上线（不必先加入任何房间）。
+
+        若已存在同名 peer 则认领它（标记在线并补充角色/路径），否则新建。
+        """
+        name = (body.get("name") or "").strip() or "Peer"
+        existing = next(
+            (a for a in hub().store.agents.values()
+             if a.kind == AgentKind.PEER and a.name == name),
+            None,
+        )
+        if existing:
+            await hub().update_agent(
+                existing.id,
+                AgentUpdate(
+                    persona=body.get("persona") or None,
+                    role=body.get("role") or None,
+                    repo_path=body.get("repo_path") or None,
+                ),
+            )
+            await hub().mark_peer_seen(existing.id)
+            return {"agent_id": existing.id, "claimed": True}
+
+        from .models import AGENT_COLORS
+
+        agent = Agent(
+            name=name,
+            persona=body.get("persona") or "一个外部的 Claude Code 实例。",
+            role=body.get("role") or "",
+            repo_path=body.get("repo_path") or "",
+            kind=AgentKind.PEER,
+            color=AGENT_COLORS[len(hub().store.agents) % len(AGENT_COLORS)],
+        )
+        hub().store.add_agent(agent)
+        await hub().mark_peer_seen(agent.id)
+        await hub().broadcast({"type": "agent_added", "agent": agent.model_dump()})
+        return {"agent_id": agent.id, "claimed": False}
+
+    @app.get("/api/instances/{agent_id}/messages")
+    async def instance_messages(agent_id: str, since: float = 0.0) -> list[dict]:
+        """读取该实例所在的全部房间中、since 之后的新消息（立即返回）。"""
+        return _instance_new_messages(hub(), agent_id, since)
+
+    @app.get("/api/instances/{agent_id}/wait")
+    async def instance_wait(
+        agent_id: str, since: float = 0.0, timeout: float = 25.0
+    ) -> list[dict]:
+        """长轮询：等待该实例所在任一房间出现新消息（跨房间，IM 式跟进）。"""
+        await hub().mark_peer_seen(agent_id)
+        deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
+        while True:
+            fresh = _instance_new_messages(hub(), agent_id, since)
+            if fresh or time.monotonic() >= deadline:
+                return fresh
+            await asyncio.sleep(0.4)
+
+    @app.post("/api/rooms/{room_id}/invite")
+    async def invite_to_room(room_id: str, body: dict) -> dict:
+        """把另一个已连接的实例按"职责(role)或名字"拉进本房间。
+
+        body: {target: 角色或名字或 agent_id, by?: 邀请者 agent_id}
+        """
+        room = hub().store.get_room(room_id)
+        if not room:
+            raise HTTPException(404, "房间不存在")
+        target = (body.get("target") or "").strip()
+        if not target:
+            raise HTTPException(400, "target 不能为空")
+
+        match = _find_instance(hub(), target)
+        if not match:
+            raise HTTPException(404, f"未找到匹配「{target}」的已连接实例")
+
+        if match.id not in room.agent_ids:
+            room.agent_ids.append(match.id)
+            await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
+
+        inviter = hub().store.get_agent(body.get("by") or "")
+        inviter_name = inviter.name if inviter else "某实例"
+        tag = f"（{match.role}）" if match.role else ""
+        await hub().post_message(
+            Message(
+                room_id=room_id,
+                sender_id="system",
+                sender_name="system",
+                role="system",
+                content=f"{inviter_name} 把 {match.name}{tag} 拉进了本房间。",
+            )
+        )
+        return {"agent_id": match.id, "room_id": room_id, "name": match.name}
+
     # ----- WebSocket ----------------------------------------------------------
 
     @app.websocket("/ws")
@@ -307,6 +422,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
     return app
+
+
+def _instance_new_messages(hub: Hub, agent_id: str, since: float) -> list[dict]:
+    """该实例所在全部房间中、since 之后的新消息，附带房间名以便区分。"""
+    rooms = hub.store.rooms_for_agent(agent_id)
+    room_names = {r.id: r.name for r in rooms}
+    msgs = hub.store.messages_for_rooms_since([r.id for r in rooms], since)
+    out = []
+    for m in msgs:
+        d = m.model_dump()
+        d["room_name"] = room_names.get(m.room_id, "")
+        out.append(d)
+    return out
+
+
+def _find_instance(hub: Hub, target: str) -> Agent | None:
+    """按 agent_id / 职责(role) / 名字 查找一个 peer 实例，优先在线的。"""
+    by_id = hub.store.get_agent(target)
+    if by_id and by_id.kind == AgentKind.PEER:
+        return by_id
+    t = target.lower()
+    peers = [a for a in hub.store.agents.values() if a.kind == AgentKind.PEER]
+    candidates = [a for a in peers if a.role.lower() == t or a.name.lower() == t]
+    if not candidates:
+        return None
+    # 优先返回在线的实例。
+    return next((a for a in candidates if a.online), candidates[0])
 
 
 def _apply_mentions(hub: Hub, room_id: str, content: str) -> None:

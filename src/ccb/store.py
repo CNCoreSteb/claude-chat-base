@@ -1,39 +1,113 @@
-"""内存状态存储 + 仅追加的对话记录持久化。
+"""SQLite 持久化存储（IM 风格的本地聊天底座）。
 
-状态（智能体、房间、消息）保存在内存中以追求速度与简洁。每条消息同时会被
-追加写入按房间划分的 JSONL 文件，因此对话可在重启后保留，也能离线回放或分析。
-这种"仅追加"的设计稳健且跨平台（无需任何数据库引擎）。
+智能体、房间、消息都存入一个本地 SQLite 文件（默认 ``<数据目录>/ccb.db``）：
+
+* ``agents`` / ``rooms``：以 JSON 形式存配置（不含运行期字段），同时在内存里保留一份
+  镜像以便频繁、快速地访问。
+* ``messages``：每条消息一行，支持按房间/时间分页查询与跨房间查询——这是把它做成
+  "多主题、可回放"的 IM 所需要的。
+
+并发：本地单用户场景下，用一个开启 WAL 的连接配合一把锁即可既简单又稳健。
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
+import threading
 from pathlib import Path
 
 from .models import Agent, Message, Room
+
+# 不写入配置（DB）的运行期字段——重启后应回到默认值。
+_AGENT_RUNTIME_FIELDS = {"status", "online", "last_seen"}
+_ROOM_RUNTIME_FIELDS = {"status", "turn"}
+
+RECENT_LIMIT = 120  # 快照/最近消息默认返回的条数
+HISTORY_LIMIT = 200  # 构造提示词时读取的最近历史条数
 
 
 class Store:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = Path(data_dir)
-        self.transcripts_dir = self.data_dir / "transcripts"
-        self.transcripts_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = self.data_dir / "ccb.db"
 
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+        # 内存镜像（小、读多写少）：智能体与房间。
         self.agents: dict[str, Agent] = {}
         self.rooms: dict[str, Room] = {}
-        self.messages: dict[str, list[Message]] = {}  # room_id -> 有序消息列表
+        self._load_state()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    # ----- schema / 加载 ------------------------------------------------------
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS rooms  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS messages (
+                    id          TEXT PRIMARY KEY,
+                    room_id     TEXT NOT NULL,
+                    sender_id   TEXT,
+                    sender_name TEXT,
+                    role        TEXT,
+                    content     TEXT,
+                    ts          REAL,
+                    color       TEXT,
+                    meta        TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_messages_room_ts ON messages(room_id, ts);
+                """
+            )
+            self._conn.commit()
+
+    def _load_state(self) -> None:
+        with self._lock:
+            for row in self._conn.execute("SELECT data FROM agents ORDER BY rowid"):
+                agent = Agent(**json.loads(row["data"]))
+                self.agents[agent.id] = agent
+            for row in self._conn.execute("SELECT data FROM rooms ORDER BY rowid"):
+                room = Room(**json.loads(row["data"]))
+                self.rooms[room.id] = room
 
     # ----- 智能体 -------------------------------------------------------------
 
     def add_agent(self, agent: Agent) -> Agent:
+        return self.upsert_agent(agent)
+
+    def upsert_agent(self, agent: Agent) -> Agent:
+        data = {k: v for k, v in agent.model_dump().items() if k not in _AGENT_RUNTIME_FIELDS}
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO agents(id, data) VALUES(?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                (agent.id, json.dumps(data, ensure_ascii=False)),
+            )
+            self._conn.commit()
         self.agents[agent.id] = agent
         return agent
 
     def remove_agent(self, agent_id: str) -> None:
         self.agents.pop(agent_id, None)
+        with self._lock:
+            self._conn.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+            self._conn.commit()
         for room in self.rooms.values():
             if agent_id in room.agent_ids:
                 room.agent_ids.remove(agent_id)
+                self.upsert_room(room)
 
     def get_agent(self, agent_id: str) -> Agent | None:
         return self.agents.get(agent_id)
@@ -41,32 +115,95 @@ class Store:
     # ----- 房间 --------------------------------------------------------------
 
     def add_room(self, room: Room) -> Room:
+        return self.upsert_room(room)
+
+    def upsert_room(self, room: Room) -> Room:
+        data = {k: v for k, v in room.model_dump().items() if k not in _ROOM_RUNTIME_FIELDS}
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO rooms(id, data) VALUES(?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                (room.id, json.dumps(data, ensure_ascii=False)),
+            )
+            self._conn.commit()
         self.rooms[room.id] = room
-        self.messages.setdefault(room.id, [])
         return room
 
     def get_room(self, room_id: str) -> Room | None:
         return self.rooms.get(room_id)
 
-    # ----- 消息 -----------------------------------------------------------
+    def rooms_for_agent(self, agent_id: str) -> list[Room]:
+        return [r for r in self.rooms.values() if agent_id in r.agent_ids]
+
+    # ----- 消息 ---------------------------------------------------------------
 
     def add_message(self, message: Message) -> Message:
-        self.messages.setdefault(message.room_id, []).append(message)
-        self._append_transcript(message)
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO messages(id, room_id, sender_id, sender_name, role, content, ts,"
+                " color, meta) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    message.id,
+                    message.room_id,
+                    message.sender_id,
+                    message.sender_name,
+                    message.role,
+                    message.content,
+                    message.ts,
+                    message.color,
+                    json.dumps(message.meta, ensure_ascii=False),
+                ),
+            )
+            self._conn.commit()
         return message
 
-    def history(self, room_id: str) -> list[Message]:
-        return self.messages.get(room_id, [])
+    def history(self, room_id: str, limit: int = HISTORY_LIMIT) -> list[Message]:
+        """按时间正序返回某房间最近 ``limit`` 条消息。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE room_id=? ORDER BY ts DESC, rowid DESC LIMIT ?",
+                (room_id, limit),
+            ).fetchall()
+        return [_row_to_message(r) for r in reversed(rows)]
+
+    def recent(self, room_id: str, limit: int = RECENT_LIMIT) -> list[Message]:
+        return self.history(room_id, limit)
+
+    def messages_since(self, room_id: str, ts: float) -> list[Message]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE room_id=? AND ts>? ORDER BY ts, rowid",
+                (room_id, ts),
+            ).fetchall()
+        return [_row_to_message(r) for r in rows]
+
+    def messages_for_rooms_since(self, room_ids: list[str], ts: float) -> list[Message]:
+        if not room_ids:
+            return []
+        placeholders = ",".join("?" for _ in room_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM messages WHERE room_id IN ({placeholders}) AND ts>? "
+                "ORDER BY ts, rowid",
+                (*room_ids, ts),
+            ).fetchall()
+        return [_row_to_message(r) for r in rows]
 
     def clear_messages(self, room_id: str) -> None:
-        """清空某个房间的内存历史（磁盘上的记录文件保留）。"""
-        self.messages[room_id] = []
+        with self._lock:
+            self._conn.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
+            self._conn.commit()
 
-    def _transcript_path(self, room_id: str) -> Path:
-        return self.transcripts_dir / f"{room_id}.jsonl"
 
-    def _append_transcript(self, message: Message) -> None:
-        path = self._transcript_path(message.room_id)
-        line = json.dumps(message.model_dump(), ensure_ascii=False)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+def _row_to_message(row: sqlite3.Row) -> Message:
+    return Message(
+        id=row["id"],
+        room_id=row["room_id"],
+        sender_id=row["sender_id"],
+        sender_name=row["sender_name"],
+        role=row["role"],
+        content=row["content"],
+        ts=row["ts"],
+        color=row["color"],
+        meta=json.loads(row["meta"] or "{}"),
+    )

@@ -91,6 +91,67 @@ def test_peer_join_claims_existing_slot(tmp_path):
         assert peers[0]["repo_path"] == "/repos/api"
 
 
+def test_instance_connect_and_discovery(tmp_path):
+    with _client(tmp_path) as client:
+        a = client.post(
+            "/api/instances/connect", json={"name": "后端", "role": "后端"}
+        ).json()
+        assert a["claimed"] is False
+        # 同名再次连接 -> 认领，不产生重复实例。
+        again = client.post(
+            "/api/instances/connect", json={"name": "后端", "role": "后端"}
+        ).json()
+        assert again["claimed"] is True and again["agent_id"] == a["agent_id"]
+
+        online = client.get("/api/instances", params={"online": True}).json()
+        assert [i["name"] for i in online] == ["后端"]
+        assert online[0]["online"] is True
+
+
+def test_invite_pulls_instance_by_role(tmp_path):
+    with _client(tmp_path) as client:
+        # 两个实例上线，"后端" 建一个主题。
+        backend = client.post(
+            "/api/instances/connect", json={"name": "后端", "role": "后端"}
+        ).json()
+        client.post("/api/instances/connect", json={"name": "web端", "role": "web端"})
+        room = client.post(
+            "/api/rooms", json={"name": "发布协调", "agent_ids": [backend["agent_id"]]}
+        ).json()
+
+        # 后端按职责把 web端 拉进来。
+        res = client.post(
+            f"/api/rooms/{room['id']}/invite",
+            json={"target": "web端", "by": backend["agent_id"]},
+        ).json()
+
+        state = client.get("/api/state").json()
+        room_state = next(r for r in state["rooms"] if r["id"] == room["id"])
+        assert res["agent_id"] in room_state["agent_ids"]
+        # 应产生一条系统提示消息。
+        msgs = client.get(f"/api/rooms/{room['id']}/messages").json()
+        assert any(m["role"] == "system" and "web端" in m["content"] for m in msgs)
+
+
+def test_instance_wait_is_cross_room(tmp_path):
+    with _client(tmp_path) as client:
+        inst = client.post(
+            "/api/instances/connect", json={"name": "后端", "role": "后端"}
+        ).json()
+        r1 = client.post("/api/rooms", json={"name": "群1", "agent_ids": [inst["agent_id"]]}).json()
+        r2 = client.post("/api/rooms", json={"name": "群2", "agent_ids": [inst["agent_id"]]}).json()
+        client.post(f"/api/rooms/{r1['id']}/messages", json={"content": "来自群1"})
+        client.post(f"/api/rooms/{r2['id']}/messages", json={"content": "来自群2"})
+
+        got = client.get(
+            f"/api/instances/{inst['agent_id']}/messages", params={"since": 0}
+        ).json()
+        contents = {m["content"] for m in got}
+        assert {"来自群1", "来自群2"} <= contents
+        # 每条消息都带上所属主题名。
+        assert all("room_name" in m for m in got)
+
+
 def test_websocket_receives_snapshot_and_events(tmp_path):
     with _client(tmp_path) as client:
         with client.websocket_connect("/ws") as ws:

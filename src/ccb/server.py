@@ -79,10 +79,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.hub = hub
 
         async def _reconcile_loop() -> None:
-            # 周期性地把长时间无活动的 peer 标记为离线。
+            # 周期性地把长时间无活动的 peer 标记为离线。单拍异常不能让整条循环退出，
+            # 否则离线判定会永久停摆。
             while True:
                 await asyncio.sleep(10)
-                await hub.reconcile_peers()
+                try:
+                    await hub.reconcile_peers()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - 记录后继续，保证离线判定不中断
+                    log.exception("reconcile_peers 失败，将在下一拍重试")
 
         reconcile_task = asyncio.create_task(_reconcile_loop())
         log.info(
@@ -161,7 +167,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         room = hub().store.get_room(room_id)
         if not room:
             raise HTTPException(404, "房间不存在")
-        if agent_id not in room.agent_ids and hub().store.get_agent(agent_id):
+        if not hub().store.get_agent(agent_id):
+            raise HTTPException(404, "智能体不存在")  # 否则会静默返回成功却没真正加入
+        if agent_id not in room.agent_ids:
             room.agent_ids.append(agent_id)
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
         return room.model_dump()
@@ -261,9 +269,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def list_messages(room_id: str, since: float = 0.0) -> list[dict]:
         if not hub().store.get_room(room_id):
             raise HTTPException(404, "房间不存在")
-        return [
-            m.model_dump() for m in hub().store.history(room_id) if m.ts > since
-        ]
+        # 用无界的 messages_since（而非截到最近 200 条的 history）——否则积压超过 200 条时
+        # 会静默丢掉 since 之后较早的消息。
+        return [m.model_dump() for m in hub().store.messages_since(room_id, since)]
 
     @app.get("/api/rooms/{room_id}/wait")
     async def wait_messages(
@@ -278,7 +286,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await hub().mark_peer_seen(agent_id)
         deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
         while True:
-            fresh = [m.model_dump() for m in hub().store.history(room_id) if m.ts > since]
+            # 用无界 messages_since，避免房间积压 >200 条时漏发较早的新消息。
+            fresh = [m.model_dump() for m in hub().store.messages_since(room_id, since)]
+            # 等待期间被踢：立即返回「已被踢出」通知，别让 in-flight 长轮询拖到下一拍才生效。
+            if agent_id and hub().is_kicked(agent_id):
+                return _kicked_payload()
             if fresh or time.monotonic() >= deadline or should_exit():
                 return fresh
             await asyncio.sleep(0.4)
@@ -296,7 +308,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         room = hub().store.get_room(room_id) if room_id else None
         if not room:
             raise HTTPException(404, "房间不存在")
-        name = body.get("name") or "Peer"
+        # 与 /api/instances/connect 一致地归一化名字（strip）——否则 "后端 " 与 "后端" 会被
+        # 当成不同实例，导致同一仓库产生重复身份、在线状态与消息路由被劈成两份。
+        name = (body.get("name") or "").strip() or "Peer"
 
         # 全局按名字认领已有的同名 peer（与 /api/instances/connect 保持一致）。
         existing = next(
@@ -317,7 +331,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 room.agent_ids.append(existing.id)
                 await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
             return {"agent_id": existing.id, "room_id": room_id, "color": existing.color,
-                    "claimed": True}
+                    "claimed": True, "now": time.time()}
 
         from .models import AGENT_COLORS
 
@@ -335,7 +349,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().mark_peer_seen(agent.id)
         await hub().broadcast({"type": "agent_added", "agent": agent.model_dump()})
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
-        return {"agent_id": agent.id, "room_id": room_id, "color": agent.color, "claimed": False}
+        return {"agent_id": agent.id, "room_id": room_id, "color": agent.color,
+                "claimed": False, "now": time.time()}
 
     @app.post("/api/peers/{agent_id}/heartbeat")
     async def peer_heartbeat(agent_id: str) -> dict:
@@ -416,7 +431,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             hub().clear_kick(existing.id)  # 主动重连即撤销「踢掉」
             await hub().mark_peer_seen(existing.id)
-            return {"agent_id": existing.id, "claimed": True}
+            return {"agent_id": existing.id, "claimed": True, "now": time.time()}
 
         from .models import AGENT_COLORS
 
@@ -431,11 +446,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hub().store.add_agent(agent)
         await hub().mark_peer_seen(agent.id)
         await hub().broadcast({"type": "agent_added", "agent": agent.model_dump()})
-        return {"agent_id": agent.id, "claimed": False}
+        return {"agent_id": agent.id, "claimed": False, "now": time.time()}
 
     @app.get("/api/instances/{agent_id}/messages")
     async def instance_messages(agent_id: str, since: float = 0.0) -> list[dict]:
         """读取该实例所在的全部房间中、since 之后的新消息（立即返回）。"""
+        if not hub().store.get_agent(agent_id):
+            raise HTTPException(404, "实例不存在")
         return _instance_new_messages(hub(), agent_id, since)
 
     @app.get("/api/instances/{agent_id}/wait")
@@ -445,10 +462,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """长轮询：等待该实例所在任一房间出现新消息（跨房间，IM 式跟进）。"""
         if hub().is_kicked(agent_id):
             return _kicked_payload()
+        if not hub().store.get_agent(agent_id):
+            raise HTTPException(404, "实例不存在")
         await hub().mark_peer_seen(agent_id)
         deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
         while True:
             fresh = _instance_new_messages(hub(), agent_id, since)
+            # 等待期间被踢：立即返回通知，别拖到下一拍。
+            if hub().is_kicked(agent_id):
+                return _kicked_payload()
             if fresh or time.monotonic() >= deadline or should_exit():
                 return fresh
             await asyncio.sleep(0.4)
@@ -470,23 +492,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not match:
             raise HTTPException(404, f"未找到匹配「{target}」的已连接实例")
 
-        if match.id not in room.agent_ids:
+        # 队列式：同一房间的并发邀请串行执行。后到的请求进锁后会发现目标已在房间里，
+        # 直接返回「已在主题内」而不再重复加入、也不再重复广播「拉进了本房间」系统消息。
+        async with hub()._invite_lock(room_id):
+            room = hub().store.get_room(room_id)
+            if not room:
+                raise HTTPException(404, "房间不存在")
+            if match.id in room.agent_ids:
+                return {"agent_id": match.id, "room_id": room_id, "name": match.name,
+                        "already_member": True}
             room.agent_ids.append(match.id)
             await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
 
-        inviter = hub().store.get_agent(body.get("by") or "")
-        inviter_name = inviter.name if inviter else "某实例"
-        tag = f"（{match.role}）" if match.role else ""
-        await hub().post_message(
-            Message(
-                room_id=room_id,
-                sender_id="system",
-                sender_name="system",
-                role="system",
-                content=f"{inviter_name} 把 {match.name}{tag} 拉进了本房间。",
+            inviter = hub().store.get_agent(body.get("by") or "")
+            inviter_name = inviter.name if inviter else "某实例"
+            tag = f"（{match.role}）" if match.role else ""
+            await hub().post_message(
+                Message(
+                    room_id=room_id,
+                    sender_id="system",
+                    sender_name="system",
+                    role="system",
+                    content=f"{inviter_name} 把 {match.name}{tag} 拉进了本房间。",
+                )
             )
-        )
-        return {"agent_id": match.id, "room_id": room_id, "name": match.name}
+        return {"agent_id": match.id, "room_id": room_id, "name": match.name,
+                "already_member": False}
 
     # ----- WebSocket ----------------------------------------------------------
 
@@ -504,6 +535,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     event = await asyncio.wait_for(queue.get(), timeout=1.0)
                 except TimeoutError:
                     continue
+                # None 是「该订阅者因积压被丢弃」的关闭哨兵：主动跳出，关闭本连接，
+                # 让浏览器走重连并重新拉取快照，而不是静默停在过期状态。
+                if event is None:
+                    break
                 await websocket.send_json(event)
         except WebSocketDisconnect:
             pass

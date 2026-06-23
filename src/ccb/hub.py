@@ -42,6 +42,9 @@ class Hub:
         self._warned_no_key = False
         # 被「踢掉」的 peer：其心跳/活动不再让它复活在线，直到它主动重新注册。
         self._kicked: set[str] = set()
+        # 每个房间一把邀请锁：把并发的 invite 串行化，避免同一实例被同时多次拉进同一主题
+        # （后到的请求进锁后会发现它已在主题里，直接返回「已在主题内」而不再重复广播）。
+        self._invite_locks: dict[str, asyncio.Lock] = {}
         # 编排器在构造之后再注入，避免循环导入。
         self.orchestrator: Any | None = None
 
@@ -103,8 +106,27 @@ class Hub:
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
-                # 客户端太慢：直接丢弃它，而不是阻塞整个房间。
+                # 客户端太慢：把它从订阅集移除，而不是阻塞整个房间。但仅仅移除会让对应的
+                # WebSocket 任务永远阻塞在 queue.get() 上、socket 既不收事件也不关闭，GUI 静默
+                # 失同步且不会触发前端重连。于是腾出一格塞入 None 哨兵，唤醒该任务去关闭连接，
+                # 让浏览器重连并重新拉取快照。
                 self._subscribers.discard(queue)
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(None)  # type: ignore[arg-type]
+                except asyncio.QueueFull:
+                    pass
+
+    def _invite_lock(self, room_id: str) -> asyncio.Lock:
+        """返回某房间的邀请串行锁（按需创建）。"""
+        lock = self._invite_locks.get(room_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._invite_locks[room_id] = lock
+        return lock
 
     # ----- 快照 -----------------------------------------------------------
 
@@ -152,8 +174,13 @@ class Hub:
         return agent
 
     async def delete_agent(self, agent_id: str) -> None:
+        # 先记下受影响的房间，删除后再广播 room_updated，让 GUI 的成员计数即时刷新。
+        affected = [r for r in self.store.rooms.values() if agent_id in r.agent_ids]
         self.store.remove_agent(agent_id)
+        self._kicked.discard(agent_id)  # 否则被回收/重建的同名 id 可能「出生即被踢」
         await self.broadcast({"type": "agent_removed", "agent_id": agent_id})
+        for room in affected:
+            await self.broadcast({"type": "room_updated", "room": room.model_dump()})
 
     async def set_agent_status(self, agent_id: str, status: str) -> None:
         agent = self.store.get_agent(agent_id)

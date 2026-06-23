@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vendored third-party assets: keep byte-identical to upstream (no EOL normalization).
+src/ccb/static/vendor/** -text

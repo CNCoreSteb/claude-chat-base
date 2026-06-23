@@ -1,96 +1,195 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-bs-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Claude Chat Base —— 智能体群聊</title>
+  <link rel="stylesheet" href="vendor/bootstrap.min.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗣️</text></svg>" />
 </head>
 <body>
-  <div id="app" class="app">
-    <!-- 左侧：房间 -->
-    <aside class="sidebar sidebar--left">
-      <div class="brand">
-        <span class="brand__mark">🗣️</span>
+  <div id="app" class="app-shell">
+
+    <!-- 左栏：主题 + 实例 -->
+    <aside class="pane pane-left d-flex flex-column">
+      <div class="brand d-flex align-items-center gap-2 px-3 py-3 border-bottom">
+        <span class="fs-3">🗣️</span>
         <div>
-          <div class="brand__name">Claude Chat Base</div>
-          <div class="brand__sub">智能体群聊</div>
+          <div class="fw-bold">Claude Chat Base</div>
+          <div class="text-secondary small text-uppercase" style="letter-spacing:2px">智能体群聊</div>
         </div>
       </div>
 
-      <div class="panel-head">
+      <div class="pane-head">
         <span>主题</span>
-        <button class="icon-btn" id="new-room-btn" title="新建主题">＋</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="newRoom" title="新建主题">＋</button>
       </div>
-      <ul class="room-list" id="room-list"></ul>
+      <ul class="list-group list-group-flush overflow-auto">
+        <li v-for="r in roomList" :key="r.id"
+            class="list-group-item list-group-item-action room-item"
+            :class="{ active: r.id === currentRoomId }" @click="selectRoom(r.id)">
+          <div class="fw-semibold">{{ r.name }}</div>
+          <div class="small text-secondary d-flex align-items-center gap-2">
+            <span class="dot" :class="r.status"></span>
+            <span>{{ statusText(r.status) }} · {{ r.agent_ids.length }} 名成员</span>
+          </div>
+        </li>
+      </ul>
 
-      <div class="panel-head">
+      <div class="pane-head">
         <span>实例（自注册）</span>
-        <button class="icon-btn" id="join-help-btn" title="复制接入命令">⧉</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="copyGenericJoin" title="复制接入命令">⧉</button>
       </div>
-      <ul class="instance-list" id="instance-list"></ul>
+      <ul class="list-group list-group-flush overflow-auto">
+        <li v-if="!peerInstances.length" class="list-group-item text-secondary small">暂无实例，点 ⧉ 复制接入命令</li>
+        <li v-for="a in peerInstances" :key="a.id" class="list-group-item d-flex align-items-center gap-2">
+          <span class="dot" :class="{ running: a.online }" :title="a.online ? '在线' : '离线'"></span>
+          <div class="flex-grow-1 min-w-0">
+            <div class="fw-semibold text-truncate">{{ a.name }}</div>
+            <div class="small text-secondary text-truncate">{{ a.role || '未注明职责' }}</div>
+          </div>
+          <button v-if="currentRoom && !currentRoom.agent_ids.includes(a.id)"
+                  class="btn btn-sm btn-link p-0 px-1 text-secondary" title="加入当前主题"
+                  @click="addToRoom(a.id)">＋</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="删除实例"
+                  @click="deleteInstance(a)">✕</button>
+        </li>
+      </ul>
 
-      <div class="server-card" id="server-card"></div>
+      <div class="server-card small text-secondary mt-auto m-3 p-3 border rounded">
+        <div>提供方 <span class="badge" :class="server.provider === 'anthropic' ? 'text-bg-success' : 'text-bg-warning'">{{ server.provider || 'mock' }}</span></div>
+        <div>模型：{{ server.default_model || '—' }}</div>
+        <div v-if="!server.has_api_key">提示：设置 CCB_ANTHROPIC_API_KEY 可启用真实智能体。</div>
+      </div>
     </aside>
 
     <!-- 中间：对话 -->
-    <main class="chat">
-      <header class="chat__header" id="chat-header">
-        <div class="chat__title">
-          <h1 id="room-name">未选择房间</h1>
-          <p id="room-topic" class="chat__topic"></p>
+    <main class="pane pane-center d-flex flex-column">
+      <header class="chat-head d-flex justify-content-between align-items-start gap-3 px-4 py-3 border-bottom">
+        <div class="min-w-0">
+          <h1 class="h5 mb-1 text-truncate">{{ currentRoom ? currentRoom.name : '未选择主题' }}</h1>
+          <p class="text-secondary small mb-0">{{ currentRoom ? currentRoom.topic : '' }}</p>
         </div>
-        <div class="chat__controls" id="chat-controls"></div>
+        <div v-if="currentRoom" class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+          <span class="text-secondary small font-monospace">第 {{ currentRoom.turn }}/{{ currentRoom.max_turns }} 轮</span>
+          <button v-if="currentRoom.status !== 'running'" class="btn btn-sm btn-primary"
+                  @click="roomAction('start')">{{ currentRoom.status === 'paused' ? '继续' : '开始' }}</button>
+          <button v-else class="btn btn-sm btn-outline-light" @click="roomAction('pause')">暂停</button>
+          <button v-if="currentRoom.status !== 'idle'" class="btn btn-sm btn-outline-secondary" @click="roomAction('stop')">停止</button>
+          <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')">重置</button>
+          <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
+        </div>
       </header>
 
-      <div class="transcript" id="transcript">
-        <div class="empty-state" id="empty-state">
-          <div class="empty-state__icon">💬</div>
-          <p>选择一个房间并点击<strong>开始</strong>，观看智能体们对话。</p>
+      <div class="transcript flex-grow-1 overflow-auto p-4" ref="transcript" @scroll="onScroll">
+        <div v-if="!currentMessages.length" class="empty-state text-center text-secondary">
+          <div style="font-size:42px">💬</div>
+          <p>点击<strong>开始</strong>观看智能体对话，或直接输入一句话引出话题。</p>
+        </div>
+        <div v-for="m in currentMessages" :key="m.id" class="msg" :class="['msg--' + m.role, { streaming: m.streaming }]">
+          <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
+          <template v-else>
+            <div class="avatar" :style="{ background: m.color || '#94a3b8' }">{{ initials(m.sender_name) }}</div>
+            <div class="msg-body min-w-0">
+              <div class="msg-head d-flex align-items-baseline gap-2">
+                <span class="fw-semibold" :style="{ color: m.color || '#cbd5e1' }">{{ m.sender_name }}</span>
+                <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
+                <span class="small text-secondary">{{ fmtTime(m.ts) }}</span>
+              </div>
+              <div class="msg-text">{{ m.content }}<span v-if="m.streaming" class="stream-cursor"></span></div>
+            </div>
+          </template>
         </div>
       </div>
 
-      <footer class="composer">
-        <textarea id="composer-input" rows="1"
-          placeholder="以人类身份插话…… 用 @名字 指定下一个发言者。（回车发送）"></textarea>
-        <button class="btn btn--primary" id="send-btn">发送</button>
+      <footer class="composer d-flex gap-2 px-4 py-3 border-top">
+        <textarea ref="composer" v-model="draft" rows="1" class="form-control"
+          placeholder="以人类身份插话…… 用 @名字 指定下一个发言者。（回车发送）"
+          @keydown.enter.exact.prevent="sendMessage" @input="autoGrow"></textarea>
+        <button class="btn btn-primary" @click="sendMessage">发送</button>
       </footer>
     </main>
 
-    <!-- 右侧：参与者 -->
-    <aside class="sidebar sidebar--right">
-      <div class="panel-head">
+    <!-- 右栏：参与者 -->
+    <aside class="pane pane-right d-flex flex-column">
+      <div class="pane-head">
         <span>参与者</span>
-        <button class="icon-btn" id="add-agent-btn" title="新增参与者">＋</button>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2" @click="newAgent" title="新增参与者">＋</button>
       </div>
-      <ul class="agent-list" id="agent-list"></ul>
-
-      <div class="panel-head">
-        <span>添加已有</span>
+      <ul class="list-group list-group-flush overflow-auto flex-grow-1">
+        <li v-for="a in roomAgents" :key="a.id" class="list-group-item d-flex align-items-center gap-2"
+            :class="{ 'opacity-50': !a.enabled }">
+          <span class="swatch" :style="{ background: a.color }"></span>
+          <div class="flex-grow-1 min-w-0">
+            <div class="fw-semibold d-flex align-items-center gap-2">
+              <span class="text-truncate">{{ a.name }}</span>
+              <span v-if="a.kind === 'peer'" class="dot" :class="{ running: a.online }"></span>
+            </div>
+            <div class="small" :class="statusClass(a)">{{ statusLabel(a) }}</div>
+            <div v-if="a.kind === 'peer' && a.repo_path" class="small text-secondary font-monospace text-truncate">{{ a.repo_path }}</div>
+          </div>
+          <button v-if="a.kind === 'peer'" class="btn btn-sm btn-link p-0 px-1 text-secondary" title="复制接入命令" @click="copyJoin(a)">⧉</button>
+          <button v-else class="btn btn-sm btn-link p-0 px-1 text-secondary" :title="a.enabled ? '静音' : '取消静音'"
+                  @click="patchAgent(a.id, { enabled: !a.enabled })">{{ a.enabled ? '🔵' : '⚪' }}</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="编辑" @click="editAgent(a)">✎</button>
+          <button class="btn btn-sm btn-link p-0 px-1 text-secondary" title="移出主题" @click="removeFromRoom(a.id)">✕</button>
+        </li>
+      </ul>
+      <div class="p-3 border-top">
+        <select class="form-select form-select-sm" :disabled="!availableAgents.length"
+                @change="onAddExisting($event)">
+          <option value="">{{ availableAgents.length ? '把已有参与者加入主题…' : '没有可添加的参与者' }}</option>
+          <option v-for="a in availableAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
       </div>
-      <div class="add-existing" id="add-existing"></div>
     </aside>
-  </div>
 
-  <!-- 弹窗骨架 -->
-  <div class="modal-backdrop" id="modal-backdrop" hidden>
-    <div class="modal" id="modal">
-      <div class="modal__head">
-        <h2 id="modal-title">标题</h2>
-        <button class="icon-btn" id="modal-close">✕</button>
-      </div>
-      <div class="modal__body" id="modal-body"></div>
-      <div class="modal__foot">
-        <button class="btn" id="modal-cancel">取消</button>
-        <button class="btn btn--primary" id="modal-ok">保存</button>
+    <!-- 弹窗（Bootstrap modal，内容由 Vue 渲染） -->
+    <div class="modal fade" tabindex="-1" ref="modal">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title h6 mb-0">{{ modal.title }}</h2>
+            <button type="button" class="btn-close" @click="hideModal"></button>
+          </div>
+          <div class="modal-body">
+            <div v-for="f in modal.fields" :key="f.key" class="mb-3">
+              <label class="form-label small">{{ f.label }}</label>
+              <textarea v-if="f.type === 'textarea'" v-model="modal.values[f.key]" class="form-control" rows="3"></textarea>
+              <select v-else-if="f.type === 'select'" v-model="modal.values[f.key]" class="form-select">
+                <option v-for="o in f.options" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+              <div v-else-if="f.type === 'color'" class="d-flex flex-wrap gap-2">
+                <button v-for="c in palette" :key="c" type="button" class="swatch-pick"
+                        :class="{ sel: modal.values[f.key] === c }" :style="{ background: c }"
+                        @click="modal.values[f.key] = c"></button>
+              </div>
+              <input v-else :type="f.type || 'text'" v-model="modal.values[f.key]" class="form-control" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" @click="hideModal">取消</button>
+            <button type="button" class="btn btn-primary" @click="saveModal">保存</button>
+          </div>
+        </div>
       </div>
     </div>
+
+    <!-- toast -->
+    <div class="toast-container position-fixed bottom-0 start-50 translate-middle-x p-3">
+      <div class="toast align-items-center border-0" ref="toast">
+        <div class="d-flex">
+          <div class="toast-body">{{ toastMsg }}</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
-  <div class="toast" id="toast" hidden></div>
-
-  <script type="module" src="app.js"></script>
+  <script src="vendor/vue.global.prod.js"></script>
+  <script src="vendor/bootstrap.bundle.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

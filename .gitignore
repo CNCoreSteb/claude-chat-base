@@ -29,3 +29,6 @@ data/
 Thumbs.db
 .idea/
 .vscode/
+
+# Playwright (used for local GUI verification)
+.playwright-mcp/

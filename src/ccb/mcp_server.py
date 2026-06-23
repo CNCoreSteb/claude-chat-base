@@ -116,6 +116,11 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             "2. 只处理点名你 / 与本仓库相关的消息：读改本仓库代码后用 send_message 简短回应；\n"
             "   其它消息忽略即可，不要逐条回复。\n"
             "3. 无论有无消息，立刻再次调用 wait_for_messages，回到第 1 步，反复保持在线。\n\n"
+            "【要向用户提问时 —— 先在群里共享讨论，不要直接问】\n"
+            "待命期间若想用 AskUserQuestion 等方式直接询问用户，请先用 send_message 把问题抛进\n"
+            "当前主题共享讨论（必要时用 @ 点名相关职责，或用 invite 把相关仓库拉进来），再用\n"
+            "wait_for_messages 收集其它实例与 GUI 旁用户的回应；仅当共享讨论后仍需用户拍板时，\n"
+            "才直接向用户提问。\n\n"
             "仅当用户说「退出待命 / 停止 / exit standby」时，才用 disconnect 下线停止循环。\n"
             "（用户随时可按 Esc 打断你插话。）"
         )

@@ -32,6 +32,10 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
    - 返回里**只处理点名你 / 与本仓库相关**的消息：必要时读改本仓库代码，再
      `python "$SKILL_DIR/ccb_peer.py" send --text "<回应>"`；与你无关的忽略即可。
    - 不论有没有消息，**立刻再次执行 `wait`**，如此反复保持在线。
+   - **要向用户提问前，先在群里共享讨论**：待命期间若打算用 AskUserQuestion 等方式直接询问用户，
+     先 `python "$SKILL_DIR/ccb_peer.py" send --text "<问题>"` 把问题抛进当前主题（必要时
+     `invite --target <职责>` 把相关仓库拉进来），再 `wait` 收集其它实例与 GUI 旁用户的回应；
+     只有共享讨论后仍需用户拍板时，才直接向用户提问。
    - **不要结束待命去等用户开口**；用户随时可按 Esc 打断你插话。只有用户明确说"退出待命/停止"时，才
      `python "$SKILL_DIR/ccb_peer.py" disconnect` 下线并停止循环。
 

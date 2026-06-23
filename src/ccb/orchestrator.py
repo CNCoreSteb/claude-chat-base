@@ -35,6 +35,14 @@ class Orchestrator:
             return
         if existing and not existing.done():
             return
+        if not self._eligible_ai_agents(room):
+            # 纯 peer 房间：没有可自动发言的 AI 智能体，这里是真实仓库 peer 的协同空间。
+            await self._system(
+                room,
+                "本房间没有可自动发言的 AI 智能体——这是供真实仓库 peer 协同的空间，"
+                "各仓库 Claude Code 的消息会实时显示在这里。",
+            )
+            return
         await self.hub.set_room_status(room_id, RoomStatus.RUNNING)
         self._tasks[room_id] = asyncio.create_task(self._run(room_id))
 

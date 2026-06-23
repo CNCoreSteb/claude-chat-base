@@ -55,6 +55,9 @@ class Agent(BaseModel):
     name: str
     persona: str = ""
     kind: AgentKind = AgentKind.AI
+    # 多仓库协同：该智能体代表的仓库角色与本地路径（peer 槽位的核心信息）。
+    role: str = ""  # 例如：依赖库 / 手机端 / web端 / 后端
+    repo_path: str = ""  # 该仓库在本机的路径，便于在对应目录启动 Claude Code
     model: str | None = None  # 为 None 时回退到服务端默认模型。
     provider: str | None = None  # "anthropic" | "mock" | None（用服务端默认）。
     temperature: float = 0.8
@@ -62,6 +65,9 @@ class Agent(BaseModel):
     enabled: bool = True
     # 仅运行期使用的字段（不是编排输入）；加载时会重置。
     status: Literal["idle", "thinking", "speaking"] = "idle"
+    # peer 在线状态：预定义的仓库槽位在真实 Claude Code 接入前为离线。
+    online: bool = False
+    last_seen: float = 0.0
 
 
 class Message(BaseModel):
@@ -92,6 +98,8 @@ class AgentCreate(BaseModel):
     name: str
     persona: str = ""
     kind: AgentKind = AgentKind.AI
+    role: str = ""
+    repo_path: str = ""
     model: str | None = None
     provider: str | None = None
     temperature: float = 0.8
@@ -102,6 +110,8 @@ class AgentCreate(BaseModel):
 class AgentUpdate(BaseModel):
     name: str | None = None
     persona: str | None = None
+    role: str | None = None
+    repo_path: str | None = None
     model: str | None = None
     provider: str | None = None
     temperature: float | None = None

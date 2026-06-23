@@ -12,6 +12,14 @@ from .models import Agent, Message, Room
 MAX_TRANSCRIPT_MESSAGES = 60  # 限制提示词规模，避免长时间运行的房间无限膨胀。
 
 
+def _role_tag(a: Agent) -> str:
+    """把仓库角色 / 路径拼成简短标签，例如 "（后端 @ /repos/api）"。"""
+    bits = [b for b in (a.role.strip(), a.repo_path.strip()) if b]
+    if not bits:
+        return ""
+    return "（" + " @ ".join(bits) + "）"
+
+
 def participants_blurb(agents: list[Agent], me: Agent) -> str:
     others = [a for a in agents if a.id != me.id]
     if not others:
@@ -20,16 +28,24 @@ def participants_blurb(agents: list[Agent], me: Agent) -> str:
     for a in others:
         summary = a.persona.strip().splitlines()
         first = next((s.strip() for s in summary if s.strip()), "")
-        lines.append(f"- {a.name}：{first}" if first else f"- {a.name}")
-    return "本房间的其他参与者：\n" + "\n".join(lines)
+        head = f"{a.name}{_role_tag(a)}"
+        lines.append(f"- {head}：{first}" if first else f"- {head}")
+    return "本房间的其他参与者（各自代表一个仓库）：\n" + "\n".join(lines)
 
 
 def build_system_prompt(agent: Agent, room: Room, agents: list[Agent]) -> str:
     persona = agent.persona.strip() or f"你是 {agent.name}，一位深思熟虑的参与者。"
     goal = room.topic.strip() or "一场开放式的讨论"
+    role_line = ""
+    if agent.role.strip() or agent.repo_path.strip():
+        role_line = f"你负责的仓库：{agent.role.strip() or '（未命名）'}"
+        if agent.repo_path.strip():
+            role_line += f"，本地路径 {agent.repo_path.strip()}"
+        role_line += "\n\n"
     return (
-        f"你是 {agent.name}，正在一个名为「{room.name}」的实时群聊里参与讨论。\n\n"
+        f"你是 {agent.name}，正在一个名为「{room.name}」的实时群聊里参与多仓库协同。\n\n"
         f"{persona}\n\n"
+        f"{role_line}"
         f"{participants_blurb(agents, agent)}\n\n"
         f"这场对话的目标：{goal}\n\n"
         "群聊规则：\n"

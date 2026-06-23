@@ -69,6 +69,8 @@ def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]
             name=raw["name"],
             persona=raw.get("persona", ""),
             kind=AgentKind(raw.get("kind", "ai")),
+            role=raw.get("role", ""),
+            repo_path=raw.get("repo_path", ""),
             model=raw.get("model") or default_model,
             provider=raw.get("provider"),
             temperature=raw.get("temperature", 0.8),

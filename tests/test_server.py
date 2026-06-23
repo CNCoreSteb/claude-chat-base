@@ -59,6 +59,38 @@ def test_peer_registration(tmp_path):
         assert agent["kind"] == "peer"
 
 
+def test_wait_returns_existing_messages_quickly(tmp_path):
+    with _client(tmp_path) as client:
+        room = client.post("/api/rooms", json={"name": "房间"}).json()
+        client.post(f"/api/rooms/{room['id']}/messages", json={"content": "先发一条"})
+        # since=0 -> 已有的消息应立即返回，不必等满 timeout。
+        msgs = client.get(f"/api/rooms/{room['id']}/wait", params={"since": 0, "timeout": 5}).json()
+        assert [m["content"] for m in msgs] == ["先发一条"]
+
+
+def test_peer_join_claims_existing_slot(tmp_path):
+    with _client(tmp_path) as client:
+        # 在 GUI 里预先建好一个仓库 peer 槽位。
+        slot = client.post(
+            "/api/agents", json={"name": "后端", "kind": "peer", "role": "后端"}
+        ).json()
+        room = client.post("/api/rooms", json={"name": "协同", "agent_ids": [slot["id"]]}).json()
+        assert slot["online"] is False
+
+        # 真实 peer 以同名加入 -> 应认领该槽位（而不是新建）并标记在线。
+        res = client.post(
+            "/api/peers", json={"room_id": room["id"], "name": "后端", "repo_path": "/repos/api"}
+        ).json()
+        assert res["claimed"] is True
+        assert res["agent_id"] == slot["id"]
+
+        state = client.get("/api/state").json()
+        peers = [a for a in state["agents"] if a["kind"] == "peer"]
+        assert len(peers) == 1  # 没有产生重复槽位
+        assert peers[0]["online"] is True
+        assert peers[0]["repo_path"] == "/repos/api"
+
+
 def test_websocket_receives_snapshot_and_events(tmp_path):
     with _client(tmp_path) as client:
         with client.websocket_connect("/ws") as ws:

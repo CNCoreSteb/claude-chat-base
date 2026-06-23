@@ -274,28 +274,43 @@ function renderAgents() {
   for (const aid of room.agent_ids) {
     const a = state.agents[aid];
     if (!a) continue;
+    const isPeer = a.kind === "peer";
     const li = el("li", "agent-item" + (a.enabled ? "" : " disabled"));
     const sw = el("span", "swatch");
     sw.style.background = a.color;
     li.appendChild(sw);
+
     const info = el("div", "agent-item__info");
     const nameRow = el("div", "agent-item__name");
     nameRow.appendChild(el("span", null, a.name));
-    if (a.kind === "peer") nameRow.appendChild(el("span", "badge", "peer"));
+    if (isPeer) {
+      const dot = el("span", "dot " + (a.online ? "running" : ""));
+      dot.title = a.online ? "在线" : "离线";
+      nameRow.appendChild(dot);
+    }
     info.appendChild(nameRow);
     info.appendChild(el("div", `agent-item__status ${a.status}`, statusLabel(a)));
+    if (isPeer && a.repo_path) {
+      info.appendChild(el("div", "agent-item__path", a.repo_path));
+    }
     li.appendChild(info);
 
-    if (a.kind === "ai") {
+    if (isPeer) {
+      const join = el("button", "tiny-btn", "⧉");
+      join.title = "复制接入命令";
+      join.onclick = () => copyJoinCommand(a, room);
+      li.appendChild(join);
+    } else {
       const toggle = el("button", "tiny-btn", a.enabled ? "🔵" : "⚪");
       toggle.title = a.enabled ? "静音" : "取消静音";
       toggle.onclick = () => api("PATCH", `/api/agents/${a.id}`, { enabled: !a.enabled });
       li.appendChild(toggle);
-      const edit = el("button", "tiny-btn", "✎");
-      edit.title = "编辑";
-      edit.onclick = () => editAgent(a);
-      li.appendChild(edit);
     }
+    const edit = el("button", "tiny-btn", "✎");
+    edit.title = "编辑";
+    edit.onclick = () => editAgent(a);
+    li.appendChild(edit);
+
     const rm = el("button", "tiny-btn", "✕");
     rm.title = "移出房间";
     rm.onclick = () => api("DELETE", `/api/rooms/${room.id}/agents/${a.id}`);
@@ -306,10 +321,32 @@ function renderAgents() {
 }
 
 function statusLabel(a) {
+  if (a.kind === "peer") {
+    const role = a.role ? a.role + " · " : "";
+    return role + (a.online ? "在线" : "离线（等待 Claude Code 接入）");
+  }
   if (!a.enabled) return "已静音";
   if (a.status === "thinking") return "思考中…";
   if (a.status === "speaking") return "发言中…";
-  return a.kind === "peer" ? "peer（外部）" : "空闲";
+  return "空闲";
+}
+
+async function copyJoinCommand(a, room) {
+  const text =
+    `# 在「${a.role || a.name}」仓库目录启动 Claude Code，并注册一次 MCP（如未注册过）：\n` +
+    `claude mcp add --transport stdio ccb -- uv run --project <claude-chat-base 路径> ccb-mcp\n\n` +
+    `# 然后对该会话说（或让它执行）：\n` +
+    `加入 CCB 房间「${room.name}」，作为「${a.name}」，角色 ${a.role || a.name}` +
+    `${a.repo_path ? `，仓库路径 ${a.repo_path}` : ""}。\n` +
+    `请调用 join_room("${room.name}", "${a.name}", "${a.role || ""}", "${a.repo_path || ""}")，\n` +
+    `随后用 wait_for_messages 持续跟进，被点名或有相关变更时用 send_message 回应。`;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`已复制「${a.name}」的接入命令`);
+  } catch {
+    toast("复制失败，请手动复制");
+    console.log(text);
+  }
 }
 
 function renderAddExisting() {
@@ -475,14 +512,24 @@ function editRoom(room) {
   }));
 }
 
+const KIND_OPTIONS = [
+  { label: "仓库 peer（接入真实 Claude Code）", value: "peer" },
+  { label: "AI 智能体（API 自动发言）", value: "ai" },
+];
+
 function newAgent() {
-  openModal("新增智能体", [
+  openModal("新增参与者", [
+    { key: "kind", label: "类型", type: "select", value: "peer", options: KIND_OPTIONS },
     { key: "name", label: "名称", value: "" },
-    { key: "persona", label: "人设 / 角色（系统提示）", type: "textarea", value: "" },
+    { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: "" },
+    { key: "repo_path", label: "仓库本地路径（可选）", value: "" },
+    { key: "persona", label: "人设 / 仓库上下文（系统提示）", type: "textarea", value: "" },
     { key: "color", label: "颜色", type: "color", value: PALETTE[Object.keys(state.agents).length % PALETTE.length] },
   ], async (v) => {
     const agent = await api("POST", "/api/agents", {
-      name: v.name || "智能体", persona: v.persona, color: v.color,
+      name: v.name || (v.kind === "peer" ? "仓库" : "智能体"),
+      kind: v.kind, role: v.role, repo_path: v.repo_path,
+      persona: v.persona, color: v.color,
     });
     if (state.currentRoomId) {
       await api("POST", `/api/rooms/${state.currentRoomId}/agents/${agent.id}`);
@@ -491,14 +538,20 @@ function newAgent() {
 }
 
 function editAgent(a) {
-  openModal("编辑智能体", [
+  const fields = [
     { key: "name", label: "名称", value: a.name },
-    { key: "persona", label: "人设 / 角色（系统提示）", type: "textarea", value: a.persona },
-    { key: "temperature", label: "温度", type: "number", value: a.temperature },
+    { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: a.role || "" },
+    { key: "repo_path", label: "仓库本地路径（可选）", value: a.repo_path || "" },
+    { key: "persona", label: "人设 / 仓库上下文（系统提示）", type: "textarea", value: a.persona },
     { key: "color", label: "颜色", type: "color", value: a.color },
-  ], (v) => api("PATCH", `/api/agents/${a.id}`, {
-    name: v.name, persona: v.persona,
-    temperature: parseFloat(v.temperature), color: v.color,
+  ];
+  if (a.kind === "ai") {
+    fields.splice(4, 0, { key: "temperature", label: "温度", type: "number", value: a.temperature });
+  }
+  openModal("编辑参与者", fields, (v) => api("PATCH", `/api/agents/${a.id}`, {
+    name: v.name, role: v.role, repo_path: v.repo_path, persona: v.persona,
+    color: v.color,
+    ...(a.kind === "ai" && v.temperature != null ? { temperature: parseFloat(v.temperature) } : {}),
   }));
 }
 

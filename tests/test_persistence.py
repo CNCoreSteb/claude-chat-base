@@ -35,14 +35,15 @@ async def test_gui_config_persists_across_restart(tmp_path):
 
 async def test_bootstrap_uses_preset_when_db_empty(tmp_path):
     h = _hub(tmp_path)
-    h.bootstrap()  # 空库 -> 导入预设
-    assert h.store.agents, "应从预设导入到参与者"
+    h.bootstrap()  # 空库 -> 导入预设（仅一个默认主题，无预置槽位）
+    assert h.store.rooms, "应从预设导入默认主题"
+    assert not h.store.agents, "默认预设不应预置任何实例"
     # 重新打开应直接命中数据库，而不是再次导入。
     h.store.close()
     h2 = _hub(tmp_path)
-    n_before = len(h2.store.agents)
+    n_before = len(h2.store.rooms)
     h2.bootstrap()
-    assert len(h2.store.agents) == n_before
+    assert len(h2.store.rooms) == n_before
 
 
 async def test_runtime_fields_reset_after_reopen(tmp_path):

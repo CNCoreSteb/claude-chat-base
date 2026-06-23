@@ -73,8 +73,11 @@ function handleEvent(ev) {
   switch (ev.type) {
     case "snapshot": return applySnapshot(ev);
     case "agent_added":
-    case "agent_updated": state.agents[ev.agent.id] = ev.agent; renderAgents(); renderRooms(); break;
-    case "agent_removed": delete state.agents[ev.agent_id]; renderAgents(); break;
+    case "agent_updated":
+      state.agents[ev.agent.id] = ev.agent;
+      renderAgents(); renderRooms(); renderInstances();
+      break;
+    case "agent_removed": delete state.agents[ev.agent_id]; renderAgents(); renderInstances(); break;
     case "agent_status":
       if (state.agents[ev.agent_id]) state.agents[ev.agent_id].status = ev.status;
       renderAgents();
@@ -83,7 +86,7 @@ function handleEvent(ev) {
     case "room_updated":
       state.rooms[ev.room.id] = ev.room;
       if (!state.currentRoomId) selectRoom(ev.room.id);
-      renderRooms(); renderHeader(); renderAgents();
+      renderRooms(); renderHeader(); renderAgents(); renderInstances();
       break;
     case "room_status":
       if (state.rooms[ev.room_id]) {
@@ -228,6 +231,7 @@ function selectRoom(id) {
   renderHeader();
   renderTranscript();
   renderAgents();
+  renderInstances();
 }
 
 // ---------- 顶栏 / 控制 ----------
@@ -369,6 +373,64 @@ function renderAddExisting() {
   wrap.appendChild(select);
 }
 
+// ---------- 全局实例（自注册） ----------
+function renderInstances() {
+  const list = $("#instance-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const room = state.rooms[state.currentRoomId];
+  const instances = Object.values(state.agents).filter((a) => a.kind === "peer");
+  if (!instances.length) {
+    list.appendChild(el("li", "instance-empty", "暂无实例，点 ⧉ 复制接入命令"));
+    return;
+  }
+  instances.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+  for (const a of instances) {
+    const li = el("li", "instance-item");
+    const dot = el("span", "dot " + (a.online ? "running" : ""));
+    dot.title = a.online ? "在线" : "离线";
+    li.appendChild(dot);
+    const info = el("div", "instance-item__info");
+    info.appendChild(el("div", "instance-item__name", a.name));
+    info.appendChild(el("div", "instance-item__meta", a.role || "未注明职责"));
+    li.appendChild(info);
+    if (room && !room.agent_ids.includes(a.id)) {
+      const add = el("button", "tiny-btn", "＋");
+      add.title = "加入当前主题";
+      add.onclick = () => api("POST", `/api/rooms/${room.id}/agents/${a.id}`);
+      li.appendChild(add);
+    }
+    const del = el("button", "tiny-btn", "✕");
+    del.title = "删除实例（历史保留）";
+    del.onclick = () => {
+      if (confirm(`删除实例「${a.name}」？其历史消息会保留。`)) {
+        api("DELETE", `/api/agents/${a.id}`);
+      }
+    };
+    li.appendChild(del);
+    list.appendChild(li);
+  }
+}
+
+async function copyGenericJoin() {
+  const room = state.rooms[state.currentRoomId];
+  const topic = room ? room.name : "大厅";
+  const text =
+    `# 1) 注册 MCP（每台机器一次）：\n` +
+    `claude mcp add --scope user --transport stdio ccb -- uv run --project <claude-chat-base 路径> ccb-mcp\n\n` +
+    `# 2) 在某个仓库目录启动 Claude Code，对它说：\n` +
+    `连接 CCB，名字"<仓库名>"，职责"<角色，如 后端/web端>"，仓库路径"<本仓库路径>"，加入主题「${topic}」。\n` +
+    `请调用 join_room("${topic}", "<仓库名>", "<角色>", "<仓库路径>")，随后反复 wait_for_messages 跟进；\n` +
+    `被点名或有相关变更时用 send_message 回应；需要谁参与时用 invite 按职责把对方拉进来。`;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制通用接入命令");
+  } catch {
+    toast("复制失败，请手动复制");
+    console.log(text);
+  }
+}
+
 // ---------- 服务端信息卡 ----------
 function renderServerCard() {
   const s = state.server;
@@ -389,6 +451,7 @@ function renderAll() {
   renderHeader();
   renderTranscript();
   renderAgents();
+  renderInstances();
   renderServerCard();
 }
 
@@ -481,14 +544,14 @@ const STRATEGY_OPTIONS = [
 // ---------- 弹窗操作 ----------
 function newRoom() {
   const agentOpts = Object.values(state.agents).map((a) => ({ label: a.name, value: a.id }));
-  openModal("新建房间", [
-    { key: "name", label: "房间名称", value: "" },
+  openModal("新建主题", [
+    { key: "name", label: "主题名称", value: "" },
     { key: "topic", label: "话题 / 目标", type: "textarea", value: "" },
     { key: "strategy", label: "发言方式", type: "select", value: "director", options: STRATEGY_OPTIONS },
     { key: "max_turns", label: "最大轮数", type: "number", value: 18 },
   ], async (v) => {
     const room = await api("POST", "/api/rooms", {
-      name: v.name || "新房间",
+      name: v.name || "新主题",
       topic: v.topic,
       strategy: v.strategy,
       max_turns: parseInt(v.max_turns) || 18,
@@ -499,8 +562,8 @@ function newRoom() {
 }
 
 function editRoom(room) {
-  openModal("编辑房间", [
-    { key: "name", label: "房间名称", value: room.name },
+  openModal("编辑主题", [
+    { key: "name", label: "主题名称", value: room.name },
     { key: "topic", label: "话题 / 目标", type: "textarea", value: room.topic },
     { key: "strategy", label: "发言方式", type: "select", value: room.strategy, options: STRATEGY_OPTIONS },
     { key: "max_turns", label: "最大轮数", type: "number", value: room.max_turns },
@@ -559,6 +622,7 @@ function editAgent(a) {
 function main() {
   $("#new-room-btn").onclick = newRoom;
   $("#add-agent-btn").onclick = newAgent;
+  $("#join-help-btn").onclick = copyGenericJoin;
   $("#modal-close").onclick = closeModal;
   $("#modal-cancel").onclick = closeModal;
   $("#modal-backdrop").onclick = (e) => { if (e.target.id === "modal-backdrop") closeModal(); };

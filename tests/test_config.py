@@ -3,17 +3,13 @@ from __future__ import annotations
 from ccb.config import DEFAULT_PRESET, Settings, load_preset
 
 
-def test_default_preset_loads_repo_peers_and_room():
+def test_default_preset_has_no_preset_slots():
+    # 不再预置任何"仓库槽位"——实例由 Claude Code 连接时自注册。
     agents, rooms = load_preset(DEFAULT_PRESET, default_model="claude-sonnet-4-6")
-    assert {a.name for a in agents} >= {"依赖库", "手机端", "web端", "后端"}
-    # 多仓库预设里的参与者都是 peer 槽位。
-    assert all(a.kind.value == "peer" for a in agents)
-    assert all(a.role for a in agents)
-    assert rooms, "预设里应至少有一个房间"
-    room = rooms[0]
-    # 房间引用的每个智能体都应能解析为真实的 agent id。
-    agent_ids = {a.id for a in agents}
-    assert set(room.agent_ids) <= agent_ids
+    assert agents == [], "默认预设不应包含任何预置智能体/槽位"
+    # 仅保留一个默认的落脚主题。
+    assert len(rooms) == 1
+    assert rooms[0].agent_ids == []
 
 
 def test_resolved_provider_auto_without_key():

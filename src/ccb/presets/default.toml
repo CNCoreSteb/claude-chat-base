@@ -1,60 +1,15 @@
-# 全新 CCB 服务的默认配置：一个面向"多仓库协同"的房间。
+# 全新 CCB 服务的默认配置。
 #
-# 每个仓库对应一个 peer 槽位（kind = "peer"）：在真实 Claude Code 接入前显示为离线。
-# 你在各仓库目录里启动 Claude Code 并 join_room 后，对应槽位即变为在线。
+# 不预置任何"仓库槽位"——各仓库的 Claude Code 连接时会**自报注册**（通过 MCP 的
+# connect / join_room 自动创建并持久化自己的身份）。这里只留一个默认的"大厅"主题，
+# 作为大家汇合、再分流到专门主题的落脚点。
 #
-# 这套配置会在首次启动时写入 <数据目录>/config.json；之后你在 GUI 里的修改都会持久化，
-# 不再读取本预设。把 CCB_PRESET 指向你自己的 TOML 也可换一套起步配置。
-
-[[agents]]
-name = "依赖库"
-kind = "peer"
-role = "依赖库"
-repo_path = ""          # 例如 D:/repos/core-lib —— 在 GUI 里填上你的实际路径
-color = "#6366f1"
-persona = """
-你代表"私有依赖库"仓库。对外提供被其他端共享的核心能力与公共接口。
-任何破坏性变更（API 改名、签名变化、行为调整）都要主动同步给手机端、web端、后端，
-并给出迁移建议与版本说明。
-"""
-
-[[agents]]
-name = "手机端"
-kind = "peer"
-role = "手机端"
-repo_path = ""
-color = "#ec4899"
-persona = """
-你代表"手机端"仓库。你是依赖库与后端的消费者。
-当依赖库或后端接口变化时，评估对移动端的影响并反馈诉求；提出你需要的接口形态。
-"""
-
-[[agents]]
-name = "web端"
-kind = "peer"
-role = "web端"
-repo_path = ""
-color = "#10b981"
-persona = """
-你代表"web端"仓库。你是依赖库与后端的消费者。
-关注接口契约、类型定义与跨端一致性；接口变化时同步影响并对齐改动节奏。
-"""
-
-[[agents]]
-name = "后端"
-kind = "peer"
-role = "后端"
-repo_path = ""
-color = "#f59e0b"
-persona = """
-你代表"后端"仓库。对外提供 API，是手机端与 web端 的数据来源。
-接口的新增/变更/废弃都要提前公告，给出契约、示例与灰度/兼容方案，并与依赖库版本对齐。
-"""
+# 这套配置只在首次启动（数据库为空）时导入；之后一切以 SQLite 里的实际状态为准。
+# 把 CCB_PRESET 指向你自己的 TOML 也可换一套起步配置（例如预置常用主题）。
 
 [[rooms]]
-name = "多仓库协同"
-topic = "在依赖库 / 手机端 / web端 / 后端之间对齐接口变更与发布节奏。"
-agents = ["依赖库", "手机端", "web端", "后端"]
+name = "大厅"
+topic = "默认协同大厅：各仓库的 Claude Code 在此汇合，可在此或新建专门主题里协同。"
 strategy = "director"
 max_turns = 18
 turn_delay = 1.2

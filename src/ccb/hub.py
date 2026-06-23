@@ -40,6 +40,8 @@ class Hub:
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
         self._providers: dict[str, LLMProvider] = {}
         self._warned_no_key = False
+        # 被「踢掉」的 peer：其心跳/活动不再让它复活在线，直到它主动重新注册。
+        self._kicked: set[str] = set()
         # 编排器在构造之后再注入，避免循环导入。
         self.orchestrator: Any | None = None
 
@@ -166,6 +168,8 @@ class Hub:
 
     async def mark_peer_seen(self, agent_id: str) -> None:
         """记录某个 peer 刚有过活动；必要时把它标记为在线并广播。"""
+        if agent_id in self._kicked:
+            return  # 已被踢掉：忽略其心跳/活动，不让它复活在线
         agent = self.store.get_agent(agent_id)
         if not agent:
             return
@@ -187,6 +191,25 @@ class Hub:
             if agent.online and now - agent.last_seen > PEER_STALE_SECONDS:
                 agent.online = False
                 await self.broadcast({"type": "agent_updated", "agent": agent.model_dump()})
+
+    def is_kicked(self, agent_id: str) -> bool:
+        return agent_id in self._kicked
+
+    def clear_kick(self, agent_id: str) -> None:
+        """实例主动重新注册（connect/join/standby）时调用：撤销「踢掉」，允许其归队。"""
+        self._kicked.discard(agent_id)
+
+    async def kick_peer(self, agent_id: str) -> bool:
+        """强制把一个 peer 踢下线：立即标记离线并记入黑名单，使其后续心跳/活动不再复活它；
+        服务端会在心跳 / wait 的响应里通知其桥接停止。实例重新注册即可归队。"""
+        agent = self.store.get_agent(agent_id)
+        if not agent:
+            return False
+        self._kicked.add(agent_id)
+        agent.online = False
+        agent.last_seen = 0.0
+        await self.broadcast({"type": "agent_updated", "agent": agent.model_dump()})
+        return True
 
     # ----- 房间操作 ----------------------------------------------------------
 

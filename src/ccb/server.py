@@ -256,6 +256,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """长轮询：等待 since 之后出现的新消息，最多等 timeout 秒；用于 peer 高效跟进。"""
         if not hub().store.get_room(room_id):
             raise HTTPException(404, "房间不存在")
+        if agent_id and hub().is_kicked(agent_id):
+            return _kicked_payload()
         if agent_id:
             await hub().mark_peer_seen(agent_id)
         deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
@@ -293,6 +295,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repo_path=body.get("repo_path") or None,
             )
             await hub().update_agent(existing.id, patch)
+            hub().clear_kick(existing.id)  # 主动重连（join/standby）即撤销「踢掉」
             await hub().mark_peer_seen(existing.id)
             if existing.id not in room.agent_ids:
                 room.agent_ids.append(existing.id)
@@ -320,7 +323,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/peers/{agent_id}/heartbeat")
     async def peer_heartbeat(agent_id: str) -> dict:
-        """心跳：由 MCP 桥接进程后台周期性调用，维持"在线"状态（与 LLM 无关、零 token）。"""
+        """心跳：由 MCP 桥接进程后台周期性调用，维持"在线"状态（与 LLM 无关、零 token）。
+
+        若该实例已被删除或被踢掉，返回 ``{"ok": False, "kicked": True}``，桥接据此停止心跳。
+        """
+        if not hub().store.get_agent(agent_id) or hub().is_kicked(agent_id):
+            return {"ok": False, "kicked": True}
         await hub().mark_peer_seen(agent_id)
         return {"ok": True}
 
@@ -329,6 +337,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """把一个 peer 标记为离线（其在 GUI 中的槽位保留）。"""
         await hub().set_peer_offline(agent_id)
         return {"ok": True}
+
+    @app.post("/api/peers/{agent_id}/kick")
+    async def peer_kick(agent_id: str) -> dict:
+        """强制踢掉一个 peer 实例：标记离线并记入黑名单，使其后续心跳/活动不再复活它；
+        桥接会在下一次心跳 / wait 的响应里收到通知而停止。实例重新注册即可归队。"""
+        agent = hub().store.get_agent(agent_id)
+        if not agent:
+            raise HTTPException(404, "实例不存在")
+        await hub().kick_peer(agent_id)
+        for room in hub().store.rooms_for_agent(agent_id):
+            await hub().post_message(
+                Message(
+                    room_id=room.id, sender_id="system", sender_name="system",
+                    role="system", content=f"{agent.name} 已被踢出（强制下线）。",
+                )
+            )
+        return {"ok": True, "agent_id": agent_id}
 
     # ----- 实例（跨房间的连接与拉群） -----------------------------------------
 
@@ -373,6 +398,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     repo_path=body.get("repo_path") or None,
                 ),
             )
+            hub().clear_kick(existing.id)  # 主动重连即撤销「踢掉」
             await hub().mark_peer_seen(existing.id)
             return {"agent_id": existing.id, "claimed": True}
 
@@ -401,6 +427,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         agent_id: str, since: float = 0.0, timeout: float = 25.0
     ) -> list[dict]:
         """长轮询：等待该实例所在任一房间出现新消息（跨房间，IM 式跟进）。"""
+        if hub().is_kicked(agent_id):
+            return _kicked_payload()
         await hub().mark_peer_seen(agent_id)
         deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
         while True:
@@ -474,6 +502,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
     return app
+
+
+def _kicked_payload() -> list[dict]:
+    """被踢掉的实例在 wait / instance_wait 上立即收到的「停止待命」系统通知。"""
+    return [
+        {
+            "id": "kicked",
+            "room_id": "",
+            "sender_id": "system",
+            "sender_name": "CCB",
+            "role": "system",
+            "content": "⛔ 你已被踢出 CCB（kicked）。请调用 disconnect 结束待命，不要再 wait；"
+            "如需归队请重新 standby。",
+            "ts": time.time(),
+            "color": None,
+            "meta": {"kicked": True},
+            "room_name": "",
+        }
+    ]
 
 
 def _instance_new_messages(hub: Hub, agent_id: str, since: float) -> list[dict]:

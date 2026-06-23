@@ -26,7 +26,9 @@ BASE_URL = os.environ.get("CCB_URL", "http://127.0.0.1:8800").rstrip("/")
 HEARTBEAT_INTERVAL = 15.0  # 秒；由桥接进程后台发送，与 LLM 无关、零 token。
 
 # 每个会话的状态（每个 Claude Code 会话对应一个 MCP 服务进程）。
-_session: dict[str, object] = {"agent_id": None, "name": None, "active_room": None, "last_ts": 0.0}
+_session: dict[str, object] = {
+    "agent_id": None, "name": None, "active_room": None, "last_ts": 0.0, "kicked": False,
+}
 
 
 def _client(timeout: float = 15.0) -> httpx.AsyncClient:
@@ -46,7 +48,10 @@ async def _heartbeat_loop() -> None:
             continue
         try:
             async with _client(8) as c:
-                await c.post(f"/api/peers/{aid}/heartbeat")
+                r = await c.post(f"/api/peers/{aid}/heartbeat")
+            if r.json().get("kicked"):
+                # 已被服务端踢掉：停止心跳，并让待命循环据此收尾。
+                _session.update(agent_id=None, active_room=None, kicked=True)
         except Exception:  # noqa: BLE001 - 服务未启动/网络抖动：忽略，下一拍再试
             pass
 
@@ -107,7 +112,9 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             )
             resp.raise_for_status()
             data = resp.json()
-        _session.update(agent_id=data["agent_id"], name=nm, active_room=match["id"], last_ts=0.0)
+        _session.update(
+            agent_id=data["agent_id"], name=nm, active_room=match["id"], last_ts=0.0, kicked=False
+        )
         return (
             f"已进入待命：以「{nm}」（{role or '未注明职责'}）加入主题「{match['name']}」。\n"
             f"仓库路径：{repo}\n\n"
@@ -137,7 +144,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             )
             resp.raise_for_status()
             data = resp.json()
-        _session.update(agent_id=data["agent_id"], name=name)
+        _session.update(agent_id=data["agent_id"], name=name, kicked=False)
         how = "认领了已有身份" if data.get("claimed") else "新建了身份"
         return f"已上线：{name}（{role or '未注明职责'}），{how}。"
 
@@ -156,7 +163,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             )
             resp.raise_for_status()
             data = resp.json()
-        _session.update(agent_id=data["agent_id"], name=nm, active_room=match["id"])
+        _session.update(agent_id=data["agent_id"], name=nm, active_room=match["id"], kicked=False)
         how = "认领了已配置的槽位" if data.get("claimed") else "加入"
         return (
             f"已以「{nm}」{how}主题「{match['name']}」。当前主题已切到这里。\n"
@@ -276,6 +283,11 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         return await _fetch_new(wait=False)
 
     async def _fetch_new(wait: bool, timeout: float = 25.0) -> str:
+        if _session.get("kicked"):
+            return (
+                "⛔ 你已被踢出 CCB（kicked）。待命已结束——"
+                "请不要再 wait；如需归队请重新 standby。"
+            )
         aid = _session["agent_id"]
         if not aid:
             return "请先 connect / join_room。"
@@ -347,7 +359,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             return "你尚未上线。"
         async with _client() as c:
             await c.post(f"/api/peers/{aid}/leave")
-        _session.update(agent_id=None, name=None, active_room=None, last_ts=0.0)
+        _session.update(agent_id=None, name=None, active_room=None, last_ts=0.0, kicked=False)
         return "已下线。"
 
     return mcp

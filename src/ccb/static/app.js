@@ -228,6 +228,11 @@ createApp({
         this.api("DELETE", `/api/agents/${a.id}`).catch(() => {});
       }
     },
+    kickInstance(a) {
+      if (confirm(`踢掉实例「${a.name}」？将强制其下线，并通知其桥接停止心跳；它重新 standby 即可归队。`)) {
+        this.api("POST", `/api/peers/${a.id}/kick`).catch(() => {});
+      }
+    },
 
     // ----- 接入命令 -----
     async copyText(text, ok) {

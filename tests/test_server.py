@@ -144,6 +144,40 @@ def test_heartbeat_marks_peer_online(tmp_path):
         assert a["online"] is True
 
 
+def test_kick_forces_offline_and_blocks_revival(tmp_path):
+    with _client(tmp_path) as client:
+        peer = client.post("/api/agents", json={"name": "后端", "kind": "peer"}).json()
+        # 心跳 -> 在线
+        assert client.post(f"/api/peers/{peer['id']}/heartbeat").json() == {"ok": True}
+        state = client.get("/api/state").json()
+        assert next(a for a in state["agents"] if a["id"] == peer["id"])["online"] is True
+
+        # 踢掉 -> 立即离线
+        assert client.post(f"/api/peers/{peer['id']}/kick").json()["ok"] is True
+        state = client.get("/api/state").json()
+        assert next(a for a in state["agents"] if a["id"] == peer["id"])["online"] is False
+
+        # 被踢后心跳不再复活，并返回 kicked 信号通知桥接停止
+        assert client.post(f"/api/peers/{peer['id']}/heartbeat").json() == {
+            "ok": False, "kicked": True
+        }
+        state = client.get("/api/state").json()
+        assert next(a for a in state["agents"] if a["id"] == peer["id"])["online"] is False
+
+        # wait 也立即返回 kicked 通知，让待命的实例据此停止
+        waited = client.get(
+            f"/api/instances/{peer['id']}/wait", params={"since": 0, "timeout": 1}
+        ).json()
+        assert waited and waited[0]["meta"]["kicked"] is True
+
+        # 主动重连（同名 connect）-> 撤销踢出，可再次在线
+        again = client.post("/api/instances/connect", json={"name": "后端"}).json()
+        assert again["agent_id"] == peer["id"]
+        assert client.post(f"/api/peers/{peer['id']}/heartbeat").json() == {"ok": True}
+        state = client.get("/api/state").json()
+        assert next(a for a in state["agents"] if a["id"] == peer["id"])["online"] is True
+
+
 def test_connect_then_join_reuses_same_instance(tmp_path):
     with _client(tmp_path) as client:
         # 实例先 connect 全局上线，再 join_room 加入房间——应复用同一实例，不产生重复。

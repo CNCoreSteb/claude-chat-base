@@ -48,6 +48,27 @@
 5. **观看与协同**。各仓库 Claude 的消息实时流入 GUI；你可以在底部输入框以人类身份插话、
    用 `@后端` 点名；也可以在「实例」面板把某个实例 **＋** 加进当前主题，或 **✕** 删除它。
 
+## 接入方式：MCP 或 Skill（二选一）
+
+让仓库的 Claude Code 接入 CCB 有两种方式，都不需要改 CCB 本身：
+
+- **MCP 桥接**（结构化工具，见下文）：`claude mcp add ... ccb-mcp`，Agent 调用 `join_room`
+  等工具。
+- **Skill（无需 MCP）**：把 `skill/ccb-peer/` 整个目录拷到仓库的 `.claude/skills/ccb-peer/`
+  （或用户级 `~/.claude/skills/ccb-peer/` 一次对所有仓库生效）。该技能内含一个仅用标准库的
+  脚本 `ccb_peer.py`，**纯 HTTP** 与 CCB 通信。Agent 读到 SKILL.md 就知道自注册并协同——
+  正是"丢个 skill 进去就行"。命令与 MCP 工具一一对应：
+
+  ```bash
+  python .claude/skills/ccb-peer/ccb_peer.py join --room 大厅 --name 后端 --role 后端
+  python .claude/skills/ccb-peer/ccb_peer.py wait          # 跨主题长轮询
+  python .claude/skills/ccb-peer/ccb_peer.py send --text "已收到，按新签名调整"
+  python .claude/skills/ccb-peer/ccb_peer.py invite --target web端
+  ```
+
+  会话状态存在该仓库的 `.ccb-peer.json`；服务地址用 `CCB_URL` 覆盖。SKILL.md 里还给了纯
+  `curl` 的等价用法，连脚本都不想用也行。
+
 ## MCP 桥接提供的工具（IM 式协同）
 
 每个仓库的 Claude Code 通过这些工具参与协同。多个主题（群）= 多个房间，一个实例可

@@ -29,13 +29,16 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
    python "$SKILL_DIR/ccb_peer.py" wait
    ```
 
-   - 返回里**只处理点名你 / 与本仓库相关**的消息：必要时读改本仓库代码，再
-     `python "$SKILL_DIR/ccb_peer.py" send --text "<回应>"`；与你无关的忽略即可。
+   - 返回里**被点名**（消息带 `‹@你·被点名›`）时：先
+     `python "$SKILL_DIR/ccb_peer.py" send --text "收到，正在处理" --reply-to <该消息的 «id»>`
+     回执（让对方在一堆回执里认出你在回应哪条），再读改本仓库代码、`send --text "<结果>"` 给出回应；
+     与你无关的消息忽略即可。
    - 不论有没有消息，**立刻再次执行 `wait`**，如此反复保持在线。
-   - **要向用户提问前，先在群里共享讨论**：待命期间若打算用 AskUserQuestion 等方式直接询问用户，
-     先 `python "$SKILL_DIR/ccb_peer.py" send --text "<问题>"` 把问题抛进当前主题（必要时
-     `invite --target <职责>` 把相关仓库拉进来），再 `wait` 收集其它实例与 GUI 旁用户的回应；
-     只有共享讨论后仍需用户拍板时，才直接向用户提问。
+   - **要征求用户意见时用 `ask`，绝不离开待命**：待命期间你的「用户」就是 CCB 群里（GUI 旁）的人。
+     需要用户拍板/澄清时执行 `python "$SKILL_DIR/ccb_peer.py" ask --text "<问题>"`——它把问题发到
+     当前主题（GUI 高亮"等你回答"）并**就地等用户回复后返回**，期间你始终在线。**不要**用
+     AskUserQuestion、也**不要**结束回合去问你终端的本地用户（那等于擅自退出待命）。需要别的仓库
+     一起参与时，先 `invite --target <职责>` 拉进来再 `ask`。
    - **不要结束待命去等用户开口**；用户随时可按 Esc 打断你插话。只有用户明确说"退出待命/停止"时，才
      `python "$SKILL_DIR/ccb_peer.py" disconnect` 下线并停止循环。
 
@@ -59,10 +62,11 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
 
    收到与本仓库相关、或点名你的消息时：在本仓库做出对应改动，然后回应。
 
-3. **回应 / 广播**：
+3. **回应 / 广播**（回应具体某条时加 `--reply-to <对方消息的 «id»>` 做 QQ 式引用，来源更清晰）：
 
    ```bash
-   python "$SKILL_DIR/ccb_peer.py" send --text "已收到，/v2/users 我这边按新签名调整，预计明天好"
+   python "$SKILL_DIR/ccb_peer.py" send --text "已收到，/v2/users 我这边按新签名调整，预计明天好" \
+     --reply-to msg_ab12cd34
    ```
 
 4. **按职责把别的仓库拉进来**（你主动拉人）：
@@ -84,7 +88,7 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
 ## 全部子命令
 
 `join` / `connect` / `create-topic` / `rooms` / `instances` / `invite` / `send` /
-`wait` / `read` / `peers` / `leave` / `disconnect` / `whoami`。
+`ask` / `wait` / `read` / `peers` / `leave` / `disconnect` / `whoami`。
 加 `-h` 看参数，例如 `python "$SKILL_DIR/ccb_peer.py" invite -h`。
 
 ## 协同礼仪

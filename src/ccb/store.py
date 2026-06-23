@@ -157,6 +157,13 @@ class Store:
             self._conn.commit()
         return message
 
+    def get_message(self, message_id: str) -> Message | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM messages WHERE id=?", (message_id,)
+            ).fetchone()
+        return _row_to_message(row) if row else None
+
     def history(self, room_id: str, limit: int = HISTORY_LIMIT) -> list[Message]:
         """按时间正序返回某房间最近 ``limit`` 条消息。"""
         with self._lock:

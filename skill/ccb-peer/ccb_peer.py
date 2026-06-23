@@ -143,10 +143,12 @@ def cmd_standby(args) -> None:
     save_state(state)
     print(
         f"已进入待命：以「{name}」加入主题「{room['name']}」（仓库 {os.getcwd()}）。\n"
-        "现在进入待命循环：反复执行 `wait`（长轮询，期间几乎不耗 token），返回后只处理点名你/"
-        "与本仓库相关的消息——必要时读改本仓库代码再 `send --text`，否则继续 `wait`。\n"
-        "要向用户提问前，先 `send --text` 把问题抛进群里共享讨论、再 `wait` 收集回应，"
-        "仅当仍需用户拍板时才直接问。\n"
+        "现在进入待命循环：反复执行 `wait`（长轮询，期间几乎不耗 token）。返回后——被点名"
+        "（消息带 ‹@你·被点名›）时先 `send --text \"收到，正在处理\" --reply-to <该消息id>` 回执，"
+        "再读改本仓库代码用 `send --text` 给结果；与你无关的忽略，继续 `wait`。\n"
+        "要征求用户意见时用 `ask --text \"问题\"`：它把问题发到群里（GUI 高亮\"等你回答\"）并就地"
+        "等用户回复，期间你始终在线——**不要**用 AskUserQuestion、也**不要**结束回合去问本地用户"
+        "（那等于擅自退出待命）。待命期间你的「用户」就是 CCB 群里(GUI 旁)的人。\n"
         "用户说「退出待命」时执行 `disconnect`。"
     )
 
@@ -221,21 +223,79 @@ def cmd_send(args) -> None:
     if not room:
         die(f"未找到主题「{ref}」。")
     request("POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
-            {"content": args.text, "agent_id": aid})
+            {"content": args.text, "agent_id": aid, "reply_to": args.reply_to})
     print(f"已发送到「{room['name']}」。")
 
 
-def _print_messages(state: dict, msgs: list) -> None:
+def cmd_ask(args) -> None:
+    """在群里向用户提问并就地等待答复——待命期间想征求用户意见时用它，别退出循环去问本地用户。"""
+    state = load_state()
+    aid = require_agent(state)
+    ref = args.topic or state.get("active_room")
+    if not ref:
+        die("没有当前主题。请用 --topic 指定，或先 join/create-topic。")
+    room = resolve_room(state, ref)
+    if not room:
+        die(f"未找到主题「{ref}」。")
+    request("POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
+            {"content": args.text, "agent_id": aid, "is_question": True})
+    seen_other: list = []
+    for _ in range(max(1, int(args.timeout / 25))):
+        since = state.get("last_ts", 0.0)
+        url = base_url(state) + f"/api/instances/{aid}/wait?since={since}&timeout=25"
+        msgs = request("GET", url, timeout=35)
+        if not msgs:
+            continue
+        state["last_ts"] = max(m["ts"] for m in msgs)
+        save_state(state)
+        humans = [m for m in msgs if m.get("sender_id") == "human"]
+        seen_other += [m for m in msgs if m.get("sender_id") not in ("human", aid)]
+        if humans:
+            ans = "\n".join(f"{m['sender_name']}: {m['content']}" for m in humans)
+            print(f"用户已回复：\n{ans}{_ask_context(seen_other)}\n"
+                  "（已得到答复。处理完后请立刻继续 `wait` 保持待命。）")
+            return
+    print("（用户暂未回复——你仍在待命、并未离线。可再次 ask 继续等，或先 `wait` 跟进其它消息。）"
+          f"{_ask_context(seen_other)}")
+
+
+def _ask_context(others: list) -> str:
+    if not others:
+        return ""
+    ctx = "\n".join(f"{m['sender_name']}: {m['content']}" for m in others)
+    return f"\n（等待期间群里其他发言：\n{ctx}）"
+
+
+def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
     if not msgs:
         print("（没有新消息）")
         return
     state["last_ts"] = max(m["ts"] for m in msgs)
     save_state(state)
     me = state.get("agent_id")
+    mentioned_any = False
     for m in msgs:
-        tag = "（你）" if m["sender_id"] == me else ""
+        you = "（你）" if m["sender_id"] == me else ""
         room = f"[{m.get('room_name', '')}] " if m.get("room_name") else ""
-        print(f"{room}{m['sender_name']}{tag}: {m['content']}")
+        meta = m.get("meta") or {}
+        tag = ""
+        if me in (meta.get("mentions") or []) and m["sender_id"] != me:
+            tag = " ‹@你·被点名›"
+            mentioned_any = True
+        quote = ""
+        if meta.get("reply_to_sender"):
+            quote = f"（↩ 回复 {meta['reply_to_sender']}：{meta.get('reply_to_preview', '')}）"
+        print(f"{room}{m['sender_name']}{you}{tag} «{m['id']}»{quote}: {m['content']}")
+    if mentioned_any:
+        print(
+            '\n⚠️ 你被点名（‹被点名›）：请先 `send --text "收到，正在处理" '
+            "--reply-to <被点名那条的 «id»>` 回执（让对方认出你在回应哪条），再着手处理。"
+        )
+    if is_wait:
+        print(
+            '\n— 待命提醒：处理完请立刻再次 `wait` 保持在线；需要征求用户意见时用 '
+            '`ask --text "问题"`（在群里问并就地等回复），切勿用 AskUserQuestion 或结束回合。'
+        )
 
 
 def cmd_wait(args) -> None:
@@ -245,7 +305,7 @@ def cmd_wait(args) -> None:
     url = (base_url(state) + f"/api/instances/{aid}/wait"
            f"?since={since}&timeout={args.timeout}")
     msgs = request("GET", url, timeout=args.timeout + 10)
-    _print_messages(state, msgs)
+    _print_messages(state, msgs, is_wait=True)
 
 
 def cmd_read(args) -> None:
@@ -337,7 +397,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("send", help="发言（缺省发到当前主题）")
     c.add_argument("--text", required=True); c.add_argument("--topic", default="")
+    c.add_argument("--reply-to", dest="reply_to", default="",
+                   help="引用回复某条消息的 id（wait 里每条消息的 «id»；被点名后回执务必带上）")
     c.set_defaults(func=cmd_send)
+
+    c = sub.add_parser("ask", help="在群里向用户提问并就地等其回复（待命期间征求用户意见用它，别退出循环）")
+    c.add_argument("--text", required=True); c.add_argument("--topic", default="")
+    c.add_argument("--timeout", type=float, default=600.0, help="最长等待秒数（缺省 600）")
+    c.set_defaults(func=cmd_ask)
 
     c = sub.add_parser("wait", help="跨主题长轮询，等到新消息再返回")
     c.add_argument("--timeout", type=float, default=25.0)

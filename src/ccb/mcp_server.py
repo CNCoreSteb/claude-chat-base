@@ -27,7 +27,8 @@ HEARTBEAT_INTERVAL = 15.0  # 秒；由桥接进程后台发送，与 LLM 无关�
 
 # 每个会话的状态（每个 Claude Code 会话对应一个 MCP 服务进程）。
 _session: dict[str, object] = {
-    "agent_id": None, "name": None, "active_room": None, "last_ts": 0.0, "kicked": False,
+    "agent_id": None, "name": None, "role": "", "active_room": None,
+    "last_ts": 0.0, "kicked": False,
 }
 
 
@@ -113,21 +114,23 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             resp.raise_for_status()
             data = resp.json()
         _session.update(
-            agent_id=data["agent_id"], name=nm, active_room=match["id"], last_ts=0.0, kicked=False
+            agent_id=data["agent_id"], name=nm, role=role,
+            active_room=match["id"], last_ts=0.0, kicked=False,
         )
         return (
             f"已进入待命：以「{nm}」（{role or '未注明职责'}）加入主题「{match['name']}」。\n"
             f"仓库路径：{repo}\n\n"
             "【待命循环 —— 现在开始持续执行，不要结束本回合、也不要等用户】\n"
             "1. 调用 wait_for_messages（长轮询，阻塞到有新消息才返回，几乎不耗 token）。\n"
-            "2. 只处理点名你 / 与本仓库相关的消息：读改本仓库代码后用 send_message 简短回应；\n"
-            "   其它消息忽略即可，不要逐条回复。\n"
+            "2. 被点名（消息带 ‹@你·被点名›）时：**先**用 send_message 回一句『收到，正在处理』，\n"
+            "   并带上 reply_to=该消息的 «id»，再读改本仓库代码、用 send_message 给出结果；\n"
+            "   与你无关的消息忽略即可，不要逐条回复。\n"
             "3. 无论有无消息，立刻再次调用 wait_for_messages，回到第 1 步，反复保持在线。\n\n"
-            "【要向用户提问时 —— 先在群里共享讨论，不要直接问】\n"
-            "待命期间若想用 AskUserQuestion 等方式直接询问用户，请先用 send_message 把问题抛进\n"
-            "当前主题共享讨论（必要时用 @ 点名相关职责，或用 invite 把相关仓库拉进来），再用\n"
-            "wait_for_messages 收集其它实例与 GUI 旁用户的回应；仅当共享讨论后仍需用户拍板时，\n"
-            "才直接向用户提问。\n\n"
+            "【要征求用户意见时 —— 用 ask，绝不离开待命】\n"
+            "待命期间你的「用户」就是 CCB 群里（GUI 旁）的人。需要用户拍板/澄清时，调用\n"
+            "ask（把问题作为入参）：它把问题发到群里（GUI 中高亮为「等你回答」）并就地等用户\n"
+            "回复后返回，其间你始终在线。**不要**用 AskUserQuestion，也**不要**结束本回合去问\n"
+            "你终端的本地用户——那等于擅自退出待命。需要别的仓库参与时，先 @ 点名或 invite 拉进来再 ask。\n\n"
             "仅当用户说「退出待命 / 停止 / exit standby」时，才用 disconnect 下线停止循环。\n"
             "（用户随时可按 Esc 打断你插话。）"
         )
@@ -144,7 +147,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             )
             resp.raise_for_status()
             data = resp.json()
-        _session.update(agent_id=data["agent_id"], name=name, kicked=False)
+        _session.update(agent_id=data["agent_id"], name=name, role=role, kicked=False)
         how = "认领了已有身份" if data.get("claimed") else "新建了身份"
         return f"已上线：{name}（{role or '未注明职责'}），{how}。"
 
@@ -163,7 +166,10 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             )
             resp.raise_for_status()
             data = resp.json()
-        _session.update(agent_id=data["agent_id"], name=nm, active_room=match["id"], kicked=False)
+        _session.update(
+            agent_id=data["agent_id"], name=nm, role=role,
+            active_room=match["id"], kicked=False,
+        )
         how = "认领了已配置的槽位" if data.get("claimed") else "加入"
         return (
             f"已以「{nm}」{how}主题「{match['name']}」。当前主题已切到这里。\n"
@@ -253,8 +259,10 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     # ----- 收发消息 -----------------------------------------------------------
 
     @mcp.tool()
-    async def send_message(content: str, topic: str = "") -> str:
-        """发言。`topic` 指定目标主题（缺省=当前主题）。所有该主题成员与 GUI 即时可见。"""
+    async def send_message(content: str, topic: str = "", reply_to: str = "") -> str:
+        """发言。`topic` 指定目标主题（缺省=当前主题）。`reply_to` 传入某条消息的 id（即
+        wait_for_messages 里每条消息的 «id»）就能像 QQ 那样**引用回复**它——被点名后回执
+        务必带上，好让对方在一堆「收到」里认出你在回应哪条。所有成员与 GUI 即时可见。"""
         if not _session["agent_id"]:
             return "请先 connect / join_room。"
         async with _client() as c:
@@ -266,10 +274,70 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                 return f"未找到主题「{room_ref}」。"
             resp = await c.post(
                 f"/api/rooms/{match['id']}/messages",
-                json={"content": content, "agent_id": _session["agent_id"]},
+                json={
+                    "content": content,
+                    "agent_id": _session["agent_id"],
+                    "reply_to": reply_to,
+                },
             )
             resp.raise_for_status()
         return f"已发送到「{match['name']}」。"
+
+    @mcp.tool()
+    async def ask(question: str, topic: str = "", timeout: float = 600.0) -> str:
+        """在 CCB 群里**向用户提问并就地等待答复**——待命期间需要用户拍板/澄清时用它，
+        **不要**用 AskUserQuestion、也**不要**结束回合去问你终端的本地用户。它会把 question
+        发到主题（GUI 中高亮为"等你回答"），然后阻塞长轮询，直到 GUI 旁的用户回话再返回。
+        全程你都留在待命、不会掉线。`timeout` 是最长等待秒数（缺省 10 分钟）。"""
+        if not _session["agent_id"]:
+            return "请先 connect / join_room。"
+        aid = _session["agent_id"]
+        async with _client() as c:
+            room_ref = topic or _session.get("active_room")
+            if not room_ref:
+                return "没有当前主题，请用 topic 指定，或先 join_room/create_topic。"
+            match = await _resolve_room(c, room_ref)
+            if not match:
+                return f"未找到主题「{room_ref}」。"
+            resp = await c.post(
+                f"/api/rooms/{match['id']}/messages",
+                json={"content": question, "agent_id": aid, "is_question": True},
+            )
+            resp.raise_for_status()
+        # 就地等用户(human)答复；只要还没等到就不断续等，绝不离开待命。
+        seen_other: list[dict] = []
+        for _ in range(max(1, int(timeout / 25))):
+            if _session.get("kicked"):
+                return "⛔ 你已被踢出 CCB，提问中止。请 disconnect 收尾。"
+            async with _client(timeout=35) as c:
+                r = await c.get(
+                    f"/api/instances/{aid}/wait",
+                    params={"since": _session["last_ts"], "timeout": 25.0},
+                )
+                r.raise_for_status()
+                msgs = r.json()
+            if not msgs:
+                continue
+            _session["last_ts"] = max(m["ts"] for m in msgs)
+            humans = [m for m in msgs if m.get("sender_id") == "human"]
+            seen_other += [m for m in msgs if m.get("sender_id") not in ("human", aid)]
+            if humans:
+                ans = "\n".join(f"{m['sender_name']}: {m['content']}" for m in humans)
+                extra = _ask_context(seen_other)
+                return (
+                    f"用户已回复：\n{ans}{extra}\n\n"
+                    "（已得到答复。处理完后请立刻继续 wait_for_messages 保持待命。）"
+                )
+        return (
+            "（用户暂未回复——你仍在待命、并未离线。可再次 ask 继续等，或先 "
+            f"wait_for_messages 跟进其它消息。）{_ask_context(seen_other)}"
+        )
+
+    def _ask_context(others: list[dict]) -> str:
+        if not others:
+            return ""
+        ctx = "\n".join(f"{m['sender_name']}: {m['content']}" for m in others)
+        return f"\n\n（等待期间群里其他发言：\n{ctx}）"
 
     @mcp.tool()
     async def wait_for_messages(timeout: float = 25.0) -> str:
@@ -303,11 +371,35 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             return "（没有新消息）"
         _session["last_ts"] = max(m["ts"] for m in msgs)
         lines = []
+        mentioned_any = False
         for m in msgs:
             me = "（你）" if m["sender_id"] == aid else ""
             room = f"[{m.get('room_name', '')}] " if m.get("room_name") else ""
-            lines.append(f"{room}{m['sender_name']}{me}: {m['content']}")
-        return "\n".join(lines)
+            meta = m.get("meta") or {}
+            tag = ""
+            if aid in (meta.get("mentions") or []) and m["sender_id"] != aid:
+                tag = " ‹@你·被点名›"
+                mentioned_any = True
+            quote = ""
+            if meta.get("reply_to_sender"):
+                quote = f"（↩ 回复 {meta['reply_to_sender']}：{meta.get('reply_to_preview', '')}）"
+            lines.append(
+                f"{room}{m['sender_name']}{me}{tag} «{m['id']}»{quote}: {m['content']}"
+            )
+        out = "\n".join(lines)
+        if mentioned_any:
+            out += (
+                "\n\n⚠️ 你被点名（‹被点名›）：请**先**用 send_message 回一句"
+                "『收到，正在处理』，并带上 reply_to=被点名那条消息的 «id»"
+                "（让对方在一堆回执里认出你在回应哪条），随后再着手处理。"
+            )
+        if wait:
+            out += (
+                "\n\n— 待命提醒：处理完请**立刻再次** wait_for_messages 保持在线；"
+                "需要征求用户意见时用 **ask**（在群里问并就地等回复），"
+                "**切勿**用 AskUserQuestion 或结束本回合去问本地用户。"
+            )
+        return out
 
     # ----- 其它 ---------------------------------------------------------------
 

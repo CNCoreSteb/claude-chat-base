@@ -211,6 +211,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         content = (body.get("content") or "").strip()
         if not content:
             raise HTTPException(400, "内容不能为空")
+        reply_to = (body.get("reply_to") or "").strip()
 
         agent_id = body.get("agent_id")
         if agent_id:
@@ -237,6 +238,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 content=content,
             )
             _apply_mentions(hub(), room_id, content)
+
+        # @ 点名 与 引用回复 都放进 meta（随消息持久化/回放、零 schema 迁移）：
+        # peer 据 meta.mentions 触发"先回执再处理"，GUI 据 reply_* 渲染 QQ 式引用。
+        mentions = _resolve_mentions(hub(), room_id, content)
+        if mentions:
+            msg.meta["mentions"] = mentions
+        if reply_to:
+            original = hub().store.get_message(reply_to)
+            if original and original.room_id == room_id:
+                msg.meta["reply_to"] = original.id
+                msg.meta["reply_to_sender"] = original.sender_name
+                msg.meta["reply_to_preview"] = _reply_preview(original.content)
+        # 待命实例用 ask 发问时标记，GUI 据此高亮"等你回答"。
+        if body.get("is_question"):
+            msg.meta["is_question"] = True
 
         await hub().post_message(msg)
         return msg.model_dump()
@@ -550,15 +566,42 @@ def _find_instance(hub: Hub, target: str) -> Agent | None:
     return next((a for a in candidates if a.online), candidates[0])
 
 
+def _mentioned_tokens(content: str) -> set[str]:
+    """从消息正文里取出全部 @token（小写）。"""
+    return {m.lower() for m in MENTION_RE.findall(content)}
+
+
+def _resolve_mentions(hub: Hub, room_id: str, content: str) -> list[str]:
+    """房间内被 @ 点名（按名字或职责匹配）的成员 agent_id。"""
+    tokens = _mentioned_tokens(content)
+    if not tokens:
+        return []
+    room = hub.store.get_room(room_id)
+    if not room:
+        return []
+    matched = []
+    for aid in room.agent_ids:
+        a = hub.store.get_agent(aid)
+        if a and (a.name.lower() in tokens or (a.role and a.role.lower() in tokens)):
+            matched.append(a.id)
+    return matched
+
+
+def _reply_preview(text: str, limit: int = 80) -> str:
+    """把被引用消息压成单行短摘要，便于在引用块里展示。"""
+    s = " ".join(text.split())
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 def _apply_mentions(hub: Hub, room_id: str, content: str) -> None:
+    tokens = _mentioned_tokens(content)
+    if not tokens:
+        return
     room = hub.store.get_room(room_id)
     if not room:
         return
-    mentioned = {m.lower() for m in MENTION_RE.findall(content)}
-    if not mentioned:
-        return
     for aid in room.agent_ids:
         agent = hub.store.get_agent(aid)
-        if agent and agent.name.lower() in mentioned and agent.kind == AgentKind.AI:
+        if agent and agent.name.lower() in tokens and agent.kind == AgentKind.AI:
             hub.orchestrator.hint_next(room_id, agent.id)
             return

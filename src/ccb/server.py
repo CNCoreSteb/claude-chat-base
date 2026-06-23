@@ -33,6 +33,35 @@ from .orchestrator import Orchestrator
 
 log = logging.getLogger("ccb.server")
 
+
+def _install_proactor_noise_filter() -> None:
+    """静默 Windows ProactorEventLoop 的已知噪声。
+
+    当客户端（浏览器）突然断开连接时，transport 的 connection-lost 回调会对已失效的
+    socket 调用 shutdown() 抛出 ConnectionResetError/OSError，被 asyncio 默认处理器记成
+    ERROR。连接此时早已断开，属无害噪声——这里把它过滤掉，其余异常仍交给默认处理器。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    previous = loop.get_exception_handler()
+
+    def handler(loop, context):  # noqa: ANN001
+        exc = context.get("exception")
+        message = context.get("message", "")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) or (
+            isinstance(exc, OSError) and "_call_connection_lost" in message
+        ):
+            return
+        if previous is not None:
+            previous(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Python 的 \w 默认是 Unicode 感知的，已能匹配中文等字符。
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -43,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        _install_proactor_noise_filter()
         hub = Hub(settings)
         hub.orchestrator = Orchestrator(hub)
         hub.bootstrap()

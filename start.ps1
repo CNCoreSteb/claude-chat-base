@@ -1,5 +1,8 @@
-# Claude Chat Base 启动脚本（Windows / PowerShell）。如未安装 uv 会先自动安装，然后启动 GUI。
+﻿# Claude Chat Base 启动脚本（Windows / PowerShell）。如未安装 uv 会先自动安装，然后启动 GUI。
+# 注意：本文件以 UTF-8 + BOM 保存，否则 Windows PowerShell 5.1 会按本地代码页解析其中的中文而出现乱码。
 $ErrorActionPreference = "Stop"
+# 让中文在控制台正确显示（兼容旧代码页）。
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 Set-Location -Path $PSScriptRoot
 
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {

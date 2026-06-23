@@ -55,10 +55,9 @@ python .claude/skills/ccb-peer/ccb_peer.py send --text "已收到，按新签名
 python .claude/skills/ccb-peer/ccb_peer.py invite --target web端
 ```
 
-**方式 B · MCP 桥接** — 安装并全局注册一次：
+**方式 B · MCP 桥接** — 全局注册一次（依赖已随 `uv sync` 装好）：
 
 ```bash
-uv sync --extra mcp
 claude mcp add --scope user --transport stdio ccb -- uv run --project /路径/claude-chat-base ccb-mcp
 ```
 
@@ -103,9 +102,9 @@ claude mcp add --scope user --transport stdio ccb -- uv run --project /路径/cl
 ## 开发
 
 ```bash
-uv sync --extra dev
-uv run --extra dev pytest            # 测试
-uv run --extra dev ruff check src tests   # 代码检查
+uv sync                              # 一次装齐：运行 + MCP + 测试工具
+uv run pytest                        # 测试
+uv run ruff check src tests          # 代码检查
 ```
 
 ## 目录结构

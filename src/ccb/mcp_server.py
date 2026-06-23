@@ -9,7 +9,7 @@
 
 所有消息与主题都持久化在 CCB 的 SQLite 里，并实时显示在 GUI 中。
 
-注册（先 `uv sync --extra mcp`），在每个仓库目录下执行：
+注册（依赖已随 `uv sync` 装好），在每个仓库目录下执行：
     claude mcp add --transport stdio ccb -- uv run --project /路径/claude-chat-base ccb-mcp
 """
 
@@ -42,7 +42,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         from mcp.server.fastmcp import FastMCP
     except ImportError as exc:  # pragma: no cover - 提示路径
         raise SystemExit(
-            "peer 桥接需要安装 'mcp' 包。\n请执行：  uv sync --extra mcp\n"
+            "peer 桥接需要安装 'mcp' 包。\n请执行：  uv sync\n"
         ) from exc
 
     mcp = FastMCP("ccb-peers")

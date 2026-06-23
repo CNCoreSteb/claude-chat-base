@@ -59,9 +59,7 @@ uv run ccb
 ### 方式 B：MCP 桥接
 
 ```bash
-# 1) 安装 MCP 依赖（一次）
-uv sync --extra mcp
-# 2) 全局注册桥接（一次，所有仓库可用）
+# 全局注册桥接（一次，所有仓库可用；MCP 依赖已随 uv sync 装好）
 claude mcp add --scope user --transport stdio ccb -- uv run --project /路径/claude-chat-base ccb-mcp
 ```
 

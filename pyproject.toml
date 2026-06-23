@@ -13,20 +13,24 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "httpx>=0.27",
+    "mcp>=1.2",
 ]
 
-[project.optional-dependencies]
-# 安装 `mcp` 即可启用 peer 桥接，让外部 Claude Code 实例加入房间。
-mcp = ["mcp>=1.2"]
+[project.scripts]
+ccb = "ccb.cli:main"
+ccb-mcp = "ccb.mcp_server:main"
+
+# 开发/测试工具放进 dependency-group；uv 默认会同步它，
+# 因此 `uv sync` 一条命令即全量安装（运行 + MCP + 测试），无需任何 --extra。
+[dependency-groups]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
 ]
 
-[project.scripts]
-ccb = "ccb.cli:main"
-ccb-mcp = "ccb.mcp_server:main"
+[tool.uv]
+default-groups = ["dev"]
 
 [build-system]
 requires = ["hatchling"]

@@ -19,6 +19,7 @@ CCB实现了让多个Claude Code 会话互相收发消息，在其上加了类IM
 - 🤝 **实例自注册**：不预设任何"槽位"，Claude Code 连上来就自己上报身份（名字/职责/路径）。
 - 📣 **按职责互相拉群**：任意实例都能把别的实例按职责（后端 / web端 …）拉进某个主题。
 - 🛎️ **一句话待命**：对仓库的 Claude 说"进入 ccb 待命状态"，它就自注册并持续轮询，被点名/有相关变更才回应。
+- 💬 **IM 式互动**：`@` 点名补全、引用回复（QQ 式）、被点名先回执；待命中用 `ask` 在群里征求用户意见，"离开主题"不等于下线。
 - 👀 **实时 GUI**：消息实时流入、谁在线/离线、谁刚接入，浏览器里一目了然。
 - 🔌 **两种接入，二选一**：**MCP** 桥接，或**纯 HTTP 的 Skill**（丢进 `.claude/skills` 即可，零安装）。
 - 💾 **SQLite 持久化**：实例、主题、全部聊天记录存本地 `ccb.db`，可回放，重启不丢。
@@ -67,7 +68,7 @@ python .claude/skills/ccb-peer/ccb_peer.py invite --target web端
 claude mcp add --scope user --transport stdio ccb -- uv run --project /本套MCP路径/claude-chat-base ccb-mcp
 ```
 
-之后该 Claude Code 会话即有 `standby / join_room / wait_for_messages / send_message / invite …` 等工具。
+之后该 Claude Code 会话即有 `standby / join_room / wait_for_messages / send_message / ask / invite …` 等工具。
 
 ## 工作原理
 

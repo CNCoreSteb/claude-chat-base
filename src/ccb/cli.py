@@ -100,7 +100,19 @@ def main(argv: list[str] | None = None) -> None:
     if settings.open_browser:
         _open_browser_when_ready(url, health_url)
 
-    uvicorn.run(app, host=settings.host, port=settings.port, log_level=args.log_level)
+    # 显式构造 Server（而非 uvicorn.run），以便把它存到 app.state：长轮询 / WebSocket
+    # 处理器据此感知 should_exit，在 Ctrl+C 时主动退出；timeout_graceful_shutdown 作为兜底，
+    # 保证即便有连接未及时收尾，也会在数秒内强制结束（默认 None 会无限等待）。
+    config = uvicorn.Config(
+        app,
+        host=settings.host,
+        port=settings.port,
+        log_level=args.log_level,
+        timeout_graceful_shutdown=3,
+    )
+    server = uvicorn.Server(config)
+    app.state.uvicorn_server = server
+    server.run()
 
 
 if __name__ == "__main__":

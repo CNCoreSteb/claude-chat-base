@@ -11,7 +11,7 @@ import asyncio
 import logging
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -94,6 +94,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             reconcile_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reconcile_task
             await hub.orchestrator.shutdown()
             hub.store.close()
 
@@ -101,6 +103,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def hub() -> Hub:
         return app.state.hub
+
+    def should_exit() -> bool:
+        """uvicorn 是否已被请求关闭（Ctrl+C 后立即置位）。
+
+        长轮询 / WebSocket 等长驻处理器据此主动收尾，避免 uvicorn 优雅关闭时
+        因这些任务迟迟不结束而卡在 "Waiting for background tasks to complete"。
+        """
+        server = getattr(app.state, "uvicorn_server", None)
+        return bool(server is not None and server.should_exit)
 
     # ----- 状态 --------------------------------------------------------------
 
@@ -250,7 +261,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
         while True:
             fresh = [m.model_dump() for m in hub().store.history(room_id) if m.ts > since]
-            if fresh or time.monotonic() >= deadline:
+            if fresh or time.monotonic() >= deadline or should_exit():
                 return fresh
             await asyncio.sleep(0.4)
 
@@ -394,7 +405,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         deadline = time.monotonic() + min(max(timeout, 0.0), 50.0)
         while True:
             fresh = _instance_new_messages(hub(), agent_id, since)
-            if fresh or time.monotonic() >= deadline:
+            if fresh or time.monotonic() >= deadline or should_exit():
                 return fresh
             await asyncio.sleep(0.4)
 
@@ -442,8 +453,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         queue = h.subscribe()
         try:
             await websocket.send_json(h.snapshot())
-            while True:
-                event = await queue.get()
+            while not should_exit():
+                # 用超时轮询代替无限 await，使本任务能感知关闭并主动退出。
+                # （queue.get() 仅在尚无消息时被取消，已取出的消息不会丢失。）
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
                 await websocket.send_json(event)
         except WebSocketDisconnect:
             pass

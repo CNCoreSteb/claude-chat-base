@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 from pathlib import Path
@@ -44,6 +45,13 @@ class Store:
         self.agents: dict[str, Agent] = {}
         self.rooms: dict[str, Room] = {}
         self._load_state()
+
+        # 单调、唯一的消息时间戳：从历史最大 ts 起步，写入时保证严格递增（必要时跳到
+        # 下一个可表示的浮点）。这样长轮询的 ``ts > since`` 游标永远不会因为两条消息撞上
+        # 同一个 time.time()（Windows 时钟分辨率约 1~16ms）而漏发其中之一。
+        with self._lock:
+            row = self._conn.execute("SELECT MAX(ts) AS m FROM messages").fetchone()
+        self._last_ts = float(row["m"]) if row and row["m"] is not None else 0.0
 
     def close(self) -> None:
         with self._lock:
@@ -139,6 +147,11 @@ class Store:
 
     def add_message(self, message: Message) -> Message:
         with self._lock:
+            # 保证 ts 严格单调递增且唯一（见 __init__）：相同 ts 的两条消息会让 since 游标漏发
+            # 其中之一；这里把它顶到下一个可表示的浮点。即便系统时钟回拨也仍然递增。
+            if message.ts <= self._last_ts:
+                message.ts = math.nextafter(self._last_ts, math.inf)
+            self._last_ts = message.ts
             self._conn.execute(
                 "INSERT INTO messages(id, room_id, sender_id, sender_name, role, content, ts,"
                 " color, meta) VALUES(?,?,?,?,?,?,?,?,?)",

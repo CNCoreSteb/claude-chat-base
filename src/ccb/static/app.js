@@ -46,25 +46,14 @@ createApp({
     roomList() { return Object.values(this.rooms); },
     currentRoom() { return this.rooms[this.currentRoomId] || null; },
     currentMessages() { return this.messages[this.currentRoomId] || []; },
-    // 当前主题里被引用回复过的消息 id 集合。
-    repliedToIds() {
+    // 被视为"已回复"的提问 id 集合：仅当**用户（human）引用回复了这条提问本身**才算。
+    // 不再用"提问之后出现过任何人类发言"来判断——否则用户引用回复其它消息、或发别的与
+    // 该提问无关的消息时，会把尚未回答的提问误标为"已回复"。要标记某条提问为已回复，
+    // 在 GUI 里对它点"↩ 回复"作答即可。
+    answeredQuestionIds() {
       const s = new Set();
       for (const m of this.currentMessages) {
-        const rid = m.meta && m.meta.reply_to;
-        if (rid) s.add(rid);
-      }
-      return s;
-    },
-    // 被视为"已回复"的提问：被引用回复过，或其后本主题出现过任何人类发言（ask 在收到
-    // 下一条 human 消息时即返回，普通直接回答也应让"❓ 等你回答"翻成"✅ 已回复"）。
-    answeredQuestionIds() {
-      const s = new Set(this.repliedToIds);
-      let lastHumanTs = -Infinity;
-      for (const m of this.currentMessages) {
-        if (m.role === "human") lastHumanTs = Math.max(lastHumanTs, m.ts);
-      }
-      for (const m of this.currentMessages) {
-        if (m.meta && m.meta.is_question && m.ts < lastHumanTs) s.add(m.id);
+        if (m.role === "human" && m.meta && m.meta.reply_to) s.add(m.meta.reply_to);
       }
       return s;
     },

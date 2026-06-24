@@ -26,6 +26,7 @@ createApp({
       currentRoomId: null,
       draft: "",
       stick: true,       // 是否贴着底部（决定流式时是否自动滚动）
+      unread: 0,         // 滚上去看历史时，期间到达的新消息条数（悬浮"回到最新"箭头上显示）
       toastMsg: "",
       palette: PALETTE,
       // 主题：用预绘制脚本已写入的 data-bs-theme 作为初值，保证切换按钮图标与实际主题一致。
@@ -49,6 +50,8 @@ createApp({
     roomList() { return Object.values(this.rooms); },
     currentRoom() { return this.rooms[this.currentRoomId] || null; },
     currentMessages() { return this.messages[this.currentRoomId] || []; },
+    // 是否显示"回到最新"悬浮箭头：当前主题有消息、且用户已滚上去（未贴底）时显示。
+    showJumpLatest() { return !this.stick && this.currentMessages.length > 0; },
     // 被视为"已回复"的提问 id 集合：仅当**用户（human）引用回复了这条提问本身**才算。
     // 不再用"提问之后出现过任何人类发言"来判断——否则用户引用回复其它消息、或发别的与
     // 该提问无关的消息时，会把尚未回答的提问误标为"已回复"。要标记某条提问为已回复，
@@ -195,7 +198,9 @@ createApp({
         this.currentRoomId = snap.rooms[0]?.id || null;
       }
       this.stick = true;
-      this.$nextTick(() => this.scrollToBottom());
+      this.unread = 0;
+      // 加载后直接停在最新一条。
+      this.scrollToLatestSoon();
     },
 
     // ----- 消息 -----
@@ -206,7 +211,10 @@ createApp({
       list.push(m);
       // 限制单主题在内存里保留的消息数，避免长会话无界增长（历史仍在服务端，刷新即重新快照）。
       if (list.length > 2000) list.splice(0, list.length - 2000);
-      if (m.room_id === this.currentRoomId && this.stick) this.$nextTick(() => this.scrollToBottom());
+      if (m.room_id === this.currentRoomId) {
+        if (this.stick) this.$nextTick(() => this.scrollToBottom());
+        else this.unread++;   // 用户正在上面看历史：累计未读，悬浮箭头上提示
+      }
     },
     appendDelta(id, delta) {
       for (const list of Object.values(this.messages)) {
@@ -228,12 +236,31 @@ createApp({
     },
     onScroll() {
       const t = this.$refs.transcript;
-      if (t) this.stick = t.scrollHeight - t.scrollTop - t.clientHeight < 120;
+      if (!t) return;
+      this.stick = t.scrollHeight - t.scrollTop - t.clientHeight < 120;
+      if (this.stick) this.unread = 0;   // 已贴底：清掉"期间新消息"计数
     },
     scrollToBottom() {
       const t = this.$refs.transcript;
       // 用 behavior:auto 瞬时贴底——流式高频更新时若用 smooth 会持续追不上底部而抖动。
       if (t) t.scrollTo({ top: t.scrollHeight, behavior: "auto" });
+      this.stick = true;
+      this.unread = 0;
+    },
+    // 加载/切换主题后稳妥地停在最新一条：DOM 更新后滚一次，再在下一帧补一次——防止字体/
+    // 布局尚未稳定导致首次 scrollHeight 偏小而没真正贴到底。
+    scrollToLatestSoon() {
+      this.$nextTick(() => {
+        this.scrollToBottom();
+        requestAnimationFrame(() => this.scrollToBottom());
+      });
+    },
+    // 点悬浮箭头：平滑回到最新消息。
+    jumpToLatest() {
+      this.stick = true;
+      this.unread = 0;
+      const t = this.$refs.transcript;
+      if (t) t.scrollTo({ top: t.scrollHeight, behavior: "smooth" });
     },
 
     // ----- 主题 -----
@@ -243,11 +270,9 @@ createApp({
       this.pickedMentions = [];       // 以及上个主题里选中的 @ 接收者
       this.closeMention();
       this.stick = true;
-      // 切换主题时用平滑滚动（仅此一处），保留切换的顺滑观感。
-      this.$nextTick(() => {
-        const t = this.$refs.transcript;
-        if (t) t.scrollTo({ top: t.scrollHeight, behavior: "smooth" });
-      });
+      this.unread = 0;
+      // 切主题直接停在最新一条（稳妥贴底）。
+      this.scrollToLatestSoon();
     },
     async roomAction(action) {
       if (this.currentRoom) await this.api("POST", `/api/rooms/${this.currentRoom.id}/${action}`);

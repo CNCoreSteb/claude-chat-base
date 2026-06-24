@@ -118,7 +118,8 @@
         </div>
       </header>
 
-      <div class="transcript flex-grow-1 overflow-auto p-4" ref="transcript" @scroll="onScroll">
+      <div class="transcript-wrap flex-grow-1 position-relative" style="min-height:0">
+        <div class="transcript h-100 overflow-auto p-4" ref="transcript" @scroll="onScroll">
         <div v-if="!currentMessages.length" class="empty-state text-center text-secondary">
           <div style="font-size:42px">💬</div>
           <p>各仓库的 Claude Code 接入后，协作消息会实时显示在这里。<br>你也可以在下方以人类身份直接插话。</p>
@@ -151,6 +152,12 @@
             </div>
           </template>
         </div>
+        </div>
+        <button v-if="showJumpLatest" class="jump-latest btn btn-primary" @click="jumpToLatest"
+                aria-label="回到最新消息" :title="unread ? unread + ' 条新消息 · 回到最新' : '回到最新'">
+          <span v-if="unread" class="jump-latest-badge">{{ unread > 99 ? '99+' : unread }}</span>
+          <span aria-hidden="true">↓</span>
+        </button>
       </div>
 
       <footer class="composer d-flex align-items-end gap-2 px-4 py-3 border-top">

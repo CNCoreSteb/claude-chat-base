@@ -289,12 +289,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return msg.model_dump()
 
     @app.get("/api/rooms/{room_id}/messages")
-    async def list_messages(room_id: str, since: float = 0.0) -> list[dict]:
+    async def list_messages(room_id: str, since: float = 0.0, limit: int = 0) -> list[dict]:
         if not hub().store.get_room(room_id):
             raise HTTPException(404, "房间不存在")
-        # 用无界的 messages_since（而非截到最近 200 条的 history）——否则积压超过 200 条时
-        # 会静默丢掉 since 之后较早的消息。
-        return [m.model_dump() for m in hub().store.messages_since(room_id, since)]
+        # 默认用无界的 messages_since（而非截到最近 200 条的 history）——否则积压超过 200 条时
+        # 会静默丢掉 since 之后较早的消息。limit>0 时只取最近 limit 条（供"按需回看历史"用）。
+        if limit and limit > 0:
+            msgs = [m for m in hub().store.history(room_id, limit) if m.ts > since]
+        else:
+            msgs = hub().store.messages_since(room_id, since)
+        return [m.model_dump() for m in msgs]
 
     @app.get("/api/rooms/{room_id}/wait")
     async def wait_messages(
@@ -354,7 +358,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 room.agent_ids.append(existing.id)
                 await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
             return {"agent_id": existing.id, "room_id": room_id, "color": existing.color,
-                    "claimed": True, "now": time.time()}
+                    "claimed": True}
 
         from .models import AGENT_COLORS
 
@@ -373,7 +377,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().broadcast({"type": "agent_added", "agent": agent.model_dump()})
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
         return {"agent_id": agent.id, "room_id": room_id, "color": agent.color,
-                "claimed": False, "now": time.time()}
+                "claimed": False}
 
     @app.post("/api/peers/{agent_id}/heartbeat")
     async def peer_heartbeat(agent_id: str) -> dict:
@@ -454,7 +458,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             hub().clear_kick(existing.id)  # 主动重连即撤销「踢掉」
             await hub().mark_peer_seen(existing.id)
-            return {"agent_id": existing.id, "claimed": True, "now": time.time()}
+            return {"agent_id": existing.id, "claimed": True}
 
         from .models import AGENT_COLORS
 
@@ -469,7 +473,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hub().store.add_agent(agent)
         await hub().mark_peer_seen(agent.id)
         await hub().broadcast({"type": "agent_added", "agent": agent.model_dump()})
-        return {"agent_id": agent.id, "claimed": False, "now": time.time()}
+        return {"agent_id": agent.id, "claimed": False}
 
     @app.get("/api/instances/{agent_id}/messages")
     async def instance_messages(agent_id: str, since: float = 0.0) -> list[dict]:

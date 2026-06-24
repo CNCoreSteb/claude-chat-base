@@ -27,6 +27,12 @@ import urllib.request
 DEFAULT_URL = os.environ.get("CCB_URL", "http://127.0.0.1:8800").rstrip("/")
 STATE_PATH = os.environ.get("CCB_PEER_STATE", os.path.join(os.getcwd(), ".ccb-peer.json"))
 
+# 单次 wait/read/ask 渲染上限：避免一次性输出过多/过长消息把工具结果撑爆（超限会被截断落盘、
+# 污染上下文）。只渲染最近 MAX_WAIT_MESSAGES 条 + 所有点名你的消息，其余折叠计数；单条正文超过
+# MAX_MSG_CHARS 截断。游标仍按全量推进（不重复投递被折叠的旧消息）。与 MCP 桥接保持一致。
+MAX_WAIT_MESSAGES = 30
+MAX_MSG_CHARS = 400
+
 
 # ----- 会话状态 --------------------------------------------------------------
 
@@ -111,9 +117,10 @@ def cmd_connect(args) -> None:
         base_url(state) + "/api/instances/connect",
         {"name": name, "role": args.role, "repo_path": args.repo or os.getcwd()},
     )
-    # last_ts 播种为服务端「现在」（仅在尚无游标时），避免首次 wait 回放全量历史；并清掉 kicked。
+    # 不重置 last_ts：fresh 仓库从 0 开始，首次 wait 即可看到近期历史（由渲染折叠上限兜住）；
+    # 已有游标则保留，继续增量跟进。清掉 kicked。
     state.update(agent_id=res["agent_id"], name=name, role=args.role,
-                 last_ts=state.get("last_ts") or res.get("now", 0.0), kicked=False)
+                 last_ts=state.get("last_ts", 0.0), kicked=False)
     save_state(state)
     how = "认领了已有身份" if res.get("claimed") else "新建了身份"
     print(f"已上线：{name}（{args.role or '未注明职责'}），{how}。")
@@ -138,7 +145,7 @@ def cmd_join(args) -> None:
     )
     state.update(agent_id=res["agent_id"], name=name, role=args.role,
                  active_room=room["id"],
-                 last_ts=state.get("last_ts") or res.get("now", 0.0), kicked=False)
+                 last_ts=state.get("last_ts", 0.0), kicked=False)
     save_state(state)
     how = "认领了已配置的槽位" if res.get("claimed") else "加入"
     print(f"已以「{name}」{how}主题「{room['name']}」，并设为当前主题。")
@@ -160,7 +167,7 @@ def cmd_standby(args) -> None:
     )
     state.update(agent_id=res["agent_id"], name=name, role=args.role,
                  active_room=room["id"],
-                 last_ts=state.get("last_ts") or res.get("now", 0.0), kicked=False)
+                 last_ts=state.get("last_ts", 0.0), kicked=False)
     save_state(state)
     print(
         f"已进入待命：以「{name}」加入主题「{room['name']}」（仓库 {os.getcwd()}）。\n"
@@ -334,13 +341,29 @@ def cmd_ask(args) -> None:
 def _ask_context(others: list) -> str:
     if not others:
         return ""
-    ctx = "\n".join(f"{m['sender_name']}: {m['content']}" for m in others)
-    return f"\n（等待期间群里其他发言：\n{ctx}）"
+
+    def _line(m):
+        c = m.get("content") or ""
+        if len(c) > MAX_MSG_CHARS:
+            c = c[:MAX_MSG_CHARS] + "…"
+        return f"{m['sender_name']}: {c}"
+
+    shown = others[-MAX_WAIT_MESSAGES:]
+    omitted = len(others) - len(shown)
+    head = f"（另折叠较早的 {omitted} 条）\n" if omitted else ""
+    return f"\n（等待期间群里其他发言：\n{head}" + "\n".join(_line(m) for m in shown) + "）"
 
 
 def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
     if not msgs:
-        print("（没有新消息）")
+        # 空结果也要带上待命提醒（仅 wait 路径）——否则房间安静时只有一句"没有新消息"、
+        # 没有"继续轮询"的约束，模型容易误判"没事干了"而结束、掉出待命循环。
+        if is_wait:
+            print("（没有新消息）\n"
+                  "— 待命提醒：没有新消息是**正常**的，请**立刻再次** `wait` 继续保持在线，"
+                  "**不要**就此结束；需要征求用户意见时用 `ask`（别用 AskUserQuestion）。")
+        else:
+            print("（没有新消息）")
         return
     # 被服务端踢出：wait/instance_wait 会立即返回带 meta.kicked 的哨兵。落一个本地 kicked 标记
     # 并停止——否则每拍都会重新收到踢出横幅、last_ts 反复抬升、永不退出（与 MCP 桥接对齐）。
@@ -363,19 +386,33 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
     if incoming:
         state["active_room"] = incoming[-1]["room_id"]
     save_state(state)
+
+    def _mentions_me(m):
+        return m["sender_id"] != me and me in ((m.get("meta") or {}).get("mentions") or [])
+
+    # 只渲染最近 MAX_WAIT_MESSAGES 条 + 所有点名你的消息，其余折叠（游标已按全量推进）。
+    keep = {m["id"] for m in msgs[-MAX_WAIT_MESSAGES:]} | {m["id"] for m in msgs if _mentions_me(m)}
+    shown = [m for m in msgs if m["id"] in keep]
+    omitted = len(msgs) - len(shown)
+    if omitted:
+        print(f"〔为避免刷屏/撑爆上下文，已折叠较早的 {omitted} 条消息（完整记录见 GUI）；"
+              "点名你的一律保留在下方。〕")
     mentioned_any = False
-    for m in msgs:
+    for m in shown:
         you = "（你）" if m["sender_id"] == me else ""
         room = f"[{m.get('room_name', '')}] " if m.get("room_name") else ""
         meta = m.get("meta") or {}
         tag = ""
-        if m["sender_id"] != me and me in (meta.get("mentions") or []):
+        if _mentions_me(m):
             tag = " ‹@你·主要找你›" if meta.get("to") == me else " ‹@你·被点名›"
             mentioned_any = True
         quote = ""
         if meta.get("reply_to_sender"):
             quote = f"（↩ 回复 {meta['reply_to_sender']}：{meta.get('reply_to_preview', '')}）"
-        print(f"{room}{m['sender_name']}{you}{tag} «{m['id']}»{quote}: {m['content']}")
+        content = m.get("content") or ""
+        if len(content) > MAX_MSG_CHARS:
+            content = content[:MAX_MSG_CHARS] + f"…〔省略 {len(m['content']) - MAX_MSG_CHARS} 字，完整见 GUI〕"
+        print(f"{room}{m['sender_name']}{you}{tag} «{m['id']}»{quote}: {content}")
     if mentioned_any:
         print(
             '\n⚠️ 你被点名（‹被点名›）：请先 `send --text "收到，正在处理" '
@@ -399,6 +436,30 @@ def cmd_wait(args) -> None:
            f"?since={since}&timeout={args.timeout}")
     msgs = request("GET", url, timeout=args.timeout + 10)
     _print_messages(state, msgs, is_wait=True)
+
+
+def cmd_history(args) -> None:
+    """查看某主题较早的历史消息（缺省=当前主题，最近 N 条），只读取、不影响 wait 进度。"""
+    state = load_state()
+    ref = args.topic or state.get("active_room")
+    if not ref:
+        die("没有当前主题。请用 --topic 指定要看哪个主题的历史。")
+    room = resolve_room(state, ref)
+    if not room:
+        die(f"未找到主题「{ref}」。")
+    n = max(1, min(int(args.limit or 50), 100))
+    msgs = request("GET", base_url(state) + f"/api/rooms/{room['id']}/messages?since=0&limit={n}")
+    if not msgs:
+        print(f"「{room['name']}」还没有历史消息。")
+        return
+    me = state.get("agent_id")
+    print(f"「{room['name']}」最近 {len(msgs)} 条历史：")
+    for m in msgs:
+        who = "（你）" if m.get("sender_id") == me else ""
+        content = m.get("content") or ""
+        if len(content) > MAX_MSG_CHARS:
+            content = content[:MAX_MSG_CHARS] + "…"
+        print(f"{m['sender_name']}{who} «{m['id']}»: {content}")
 
 
 def cmd_read(args) -> None:
@@ -518,6 +579,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.set_defaults(func=cmd_wait)
 
     sub.add_parser("read", help="立即读取新消息（不阻塞）").set_defaults(func=cmd_read)
+
+    c = sub.add_parser("history", help="查看某主题较早的历史消息（缺省=当前主题，最近 N 条）")
+    c.add_argument("--topic", default=""); c.add_argument("--limit", type=int, default=50)
+    c.set_defaults(func=cmd_history)
 
     c = sub.add_parser("peers", help="列出某主题的参与者")
     c.add_argument("--topic", default="")

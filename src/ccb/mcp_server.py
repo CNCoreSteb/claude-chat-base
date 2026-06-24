@@ -25,6 +25,13 @@ import httpx
 BASE_URL = os.environ.get("CCB_URL", "http://127.0.0.1:8800").rstrip("/")
 HEARTBEAT_INTERVAL = 15.0  # 秒；由桥接进程后台发送，与 LLM 无关、零 token。
 
+# 单次 wait/read/ask 渲染上限：避免一次性返回过多/过长消息把工具输出撑爆——超限会被 harness
+# 截断落盘、并污染上下文（实测会让 peer 退化）。只渲染最近 MAX_WAIT_MESSAGES 条 + 所有点名你的
+# 消息（点名一律保留，免得淹没在洪泛里），其余折叠成一句计数；单条正文超过 MAX_MSG_CHARS 截断。
+# 游标仍按全量推进（不重复投递被折叠的旧消息）。正常少量消息时这些上限不触发，行为不变。
+MAX_WAIT_MESSAGES = 30
+MAX_MSG_CHARS = 400
+
 # 每个会话的状态（每个 Claude Code 会话对应一个 MCP 服务进程）。
 _session: dict[str, object] = {
     "agent_id": None, "name": None, "role": "", "active_room": None,
@@ -119,9 +126,8 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             agent_id=data["agent_id"], name=nm, role=role,
             active_room=match["id"], kicked=False,
         )
-        # 把 last_ts 播种到服务端「现在」，而不是 0.0——否则首次 wait 会把该主题的全部历史
-        # 一次性灌进上下文。已有游标（同进程内再次 standby）则保留，避免错过期间的消息。
-        _session["last_ts"] = _session.get("last_ts") or data.get("now", 0.0)
+        # 不重置/播种 last_ts：fresh 进程从 0 开始，首次 wait 即可看到近期历史（由渲染折叠上限
+        # 兜住、不会洪泛）；同进程内已有游标则保留，继续增量跟进。
         return (
             f"已进入待命：以「{nm}」（{role or '未注明职责'}）加入主题「{match['name']}」。\n"
             f"仓库路径：{repo}\n\n"
@@ -157,7 +163,6 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             resp.raise_for_status()
             data = resp.json()
         _session.update(agent_id=data["agent_id"], name=name, role=role, kicked=False)
-        _session["last_ts"] = _session.get("last_ts") or data.get("now", 0.0)
         how = "认领了已有身份" if data.get("claimed") else "新建了身份"
         return f"已上线：{name}（{role or '未注明职责'}），{how}。"
 
@@ -180,7 +185,6 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             agent_id=data["agent_id"], name=nm, role=role,
             active_room=match["id"], kicked=False,
         )
-        _session["last_ts"] = _session.get("last_ts") or data.get("now", 0.0)
         how = "认领了已配置的槽位" if data.get("claimed") else "加入"
         return (
             f"已以「{nm}」{how}主题「{match['name']}」。当前主题已切到这里。\n"
@@ -389,8 +393,17 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     def _ask_context(others: list[dict]) -> str:
         if not others:
             return ""
-        ctx = "\n".join(f"{m['sender_name']}: {m['content']}" for m in others)
-        return f"\n\n（等待期间群里其他发言：\n{ctx}）"
+
+        def _line(m: dict) -> str:
+            c = m.get("content") or ""
+            if len(c) > MAX_MSG_CHARS:
+                c = c[:MAX_MSG_CHARS] + "…"
+            return f"{m['sender_name']}: {c}"
+
+        shown = others[-MAX_WAIT_MESSAGES:]
+        omitted = len(others) - len(shown)
+        head = f"（另折叠较早的 {omitted} 条）\n" if omitted else ""
+        return f"\n\n（等待期间群里其他发言：\n{head}" + "\n".join(_line(m) for m in shown) + "）"
 
     @mcp.tool()
     async def wait_for_messages(timeout: float = 25.0) -> str:
@@ -402,6 +415,35 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     async def read_messages() -> str:
         """立即读取你所在全部主题中、上次之后的新消息（不阻塞）。"""
         return await _fetch_new(wait=False)
+
+    @mcp.tool()
+    async def history(topic: str = "", limit: int = 50) -> str:
+        """查看某主题**较早的历史消息**（缺省=当前主题；最近 limit 条，缺省 50、最多 100）。
+        用于回看你加入之前、或已折叠的早期对话——只读取、**不影响** wait 进度（不推进游标）。"""
+        n = max(1, min(int(limit or 50), 100))
+        async with _client() as c:
+            room_ref = topic or _session.get("active_room")
+            if not room_ref:
+                return "没有当前主题，请用 topic 指定要看哪个主题的历史。"
+            match = await _resolve_room(c, room_ref)
+            if not match:
+                return f"未找到主题「{room_ref}」。"
+            resp = await c.get(
+                f"/api/rooms/{match['id']}/messages", params={"since": 0.0, "limit": n}
+            )
+            resp.raise_for_status()
+            msgs = resp.json()
+        if not msgs:
+            return f"「{match['name']}」还没有历史消息。"
+        aid = _session.get("agent_id")
+        lines = []
+        for m in msgs:
+            who = "（你）" if m.get("sender_id") == aid else ""
+            content = m.get("content") or ""
+            if len(content) > MAX_MSG_CHARS:
+                content = content[:MAX_MSG_CHARS] + "…"
+            lines.append(f"{m['sender_name']}{who} «{m['id']}»: {content}")
+        return f"「{match['name']}」最近 {len(msgs)} 条历史：\n" + "\n".join(lines)
 
     async def _fetch_new(wait: bool, timeout: float = 25.0) -> str:
         if _session.get("kicked"):
@@ -421,7 +463,16 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             resp.raise_for_status()
             msgs = resp.json()
         if not msgs:
-            return "（没有新消息）"
+            if not wait:
+                return "（没有新消息）"
+            # 关键：空结果也要带上待命提醒——否则房间安静时模型只收到一句"没有新消息"、
+            # 没有任何"继续轮询"的约束，容易误判"没事干了"而结束回合、掉出待命循环。
+            return (
+                "（没有新消息）\n\n"
+                "— 待命提醒：没有新消息是**正常**的，请**立刻再次调用** wait_for_messages "
+                "继续保持在线；**不要**就此结束本回合或退出待命。"
+                "需要征求用户意见时用 **ask**（别用 AskUserQuestion）。"
+            )
         _session["last_ts"] = max(m["ts"] for m in msgs)
         # 记录 id→主题；并让"当前主题"跟随最近一条非自己的消息——修复被 invite 进新主题后，
         # 回复缺省漏回大厅（active_room 卡在 standby 的主题）的问题。
@@ -435,23 +486,42 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         incoming = [m for m in msgs if m["sender_id"] != aid and m.get("room_id")]
         if incoming:
             _session["active_room"] = incoming[-1]["room_id"]
+
+        # 只渲染「最近 MAX_WAIT_MESSAGES 条」+「所有点名你的消息」，其余折叠计数；游标已按全量
+        # 推进，被折叠的旧消息不会再次投递（见模块顶部常量说明）。
+        def _mentions_me(m: dict) -> bool:
+            return m["sender_id"] != aid and aid in ((m.get("meta") or {}).get("mentions") or [])
+
+        keep = {m["id"] for m in msgs[-MAX_WAIT_MESSAGES:]}
+        keep |= {m["id"] for m in msgs if _mentions_me(m)}
+        shown = [m for m in msgs if m["id"] in keep]
+        omitted = len(msgs) - len(shown)
         lines = []
         mentioned_any = False
-        for m in msgs:
+        for m in shown:
             me = "（你）" if m["sender_id"] == aid else ""
             room = f"[{m.get('room_name', '')}] " if m.get("room_name") else ""
             meta = m.get("meta") or {}
             tag = ""
-            if m["sender_id"] != aid and aid in (meta.get("mentions") or []):
+            if _mentions_me(m):
                 tag = " ‹@你·主要找你›" if meta.get("to") == aid else " ‹@你·被点名›"
                 mentioned_any = True
             quote = ""
             if meta.get("reply_to_sender"):
                 quote = f"（↩ 回复 {meta['reply_to_sender']}：{meta.get('reply_to_preview', '')}）"
+            content = m.get("content") or ""
+            if len(content) > MAX_MSG_CHARS:
+                cut = len(content) - MAX_MSG_CHARS
+                content = content[:MAX_MSG_CHARS] + f"…〔省略 {cut} 字，完整见 GUI〕"
             lines.append(
-                f"{room}{m['sender_name']}{me}{tag} «{m['id']}»{quote}: {m['content']}"
+                f"{room}{m['sender_name']}{me}{tag} «{m['id']}»{quote}: {content}"
             )
         out = "\n".join(lines)
+        if omitted:
+            out = (
+                f"〔为避免刷屏/撑爆上下文，已折叠较早的 {omitted} 条消息（完整记录见 GUI）；"
+                "点名你的消息一律保留在下方。〕\n" + out
+            )
         if mentioned_any:
             out += (
                 "\n\n⚠️ 你被点名（‹被点名›）：请**先**用 send_message 回一句"

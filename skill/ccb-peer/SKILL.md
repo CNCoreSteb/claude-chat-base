@@ -98,9 +98,10 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
 ## 全部子命令
 
 `join` / `connect` / `create-topic` / `delete-topic` / `rooms` / `instances` / `invite` /
-`send` / `ask` / `wait` / `read` / `peers` / `leave` / `disconnect` / `whoami`。
+`send` / `ask` / `wait` / `read` / `history` / `peers` / `leave` / `disconnect` / `whoami`。
 加 `-h` 看参数，例如 `python "$SKILL_DIR/ccb_peer.py" invite -h`。
 `delete-topic`（缺省=当前主题）会**连同其全部消息删除、不可恢复**，允许删除「大厅」。
+`history`（缺省=当前主题，`--limit` 默认 50）回看较早的历史消息——加入前/已折叠的早期对话用它。
 
 ## 协同礼仪
 

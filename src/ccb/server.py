@@ -254,11 +254,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             _apply_mentions(hub(), room_id, content)
 
-        # @ 点名 与 引用回复 都放进 meta（随消息持久化/回放、零 schema 迁移）：
-        # peer 据 meta.mentions 触发"先回执再处理"，GUI 据 reply_* 渲染 QQ 式引用。
-        mentions = _resolve_mentions(hub(), room_id, content)
-        if mentions:
-            msg.meta["mentions"] = mentions
+        # 点名：把「正文 @ 文本解析出的成员」与「调用方用 agent_id（或名字/职责）显式指定的
+        # 接收者」合并，并用 meta.to 明确标出**主要发给谁**——让"这条主要发给谁"不再只靠脆弱的
+        # 文本匹配（重名/措辞/大小写都可能歧义），而是按 id 规范化。随消息持久化、零 schema 迁移。
+        text_ids = _resolve_mentions(hub(), room_id, content)
+        to_id = _resolve_member(hub(), room_id, body.get("to"))
+        explicit_ids: list[str] = []
+        raw_mentions = body.get("mentions")
+        if isinstance(raw_mentions, list):
+            for tok in raw_mentions:
+                rid = _resolve_member(hub(), room_id, tok)
+                if rid and rid not in explicit_ids:
+                    explicit_ids.append(rid)
+        # 顺序：主要接收者优先，其次显式 mentions，再文本解析；去重。
+        ordered: list[str] = []
+        for rid in ([to_id] if to_id else []) + explicit_ids + text_ids:
+            if rid and rid not in ordered:
+                ordered.append(rid)
+        if ordered:
+            msg.meta["mentions"] = ordered
+        if to_id:
+            msg.meta["to"] = to_id  # 主要接收者（按 id 规范，不依赖文本）
         if reply_to:
             original = hub().store.get_message(reply_to)
             if original and original.room_id == room_id:
@@ -611,6 +627,28 @@ def _find_instance(hub: Hub, target: str) -> Agent | None:
 def _mentioned_tokens(content: str) -> set[str]:
     """从消息正文里取出全部 @token（小写）。"""
     return {m.lower() for m in MENTION_RE.findall(content)}
+
+
+def _resolve_member(hub: Hub, room_id: str, token: object) -> str | None:
+    """把 token（agent_id/名字/职责）解析成**本房间内**某成员的 agent_id，解析不到返回 None。
+
+    用于消息的显式接收者约束（``to`` / ``mentions``）：GUI 传 agent_id，agent 也可传名字/职责；
+    只在房间成员范围内匹配——只能指定在场的人，与文本 @ 的解析口径一致。
+    """
+    tok = str(token or "").strip()
+    if not tok:
+        return None
+    room = hub.store.get_room(room_id)
+    if not room:
+        return None
+    if tok in room.agent_ids and hub.store.get_agent(tok):
+        return tok  # 直接给的就是在场成员的 agent_id
+    t = tok.lower()
+    for aid in room.agent_ids:
+        a = hub.store.get_agent(aid)
+        if a and (a.name.lower() == t or (a.role and a.role.lower() == t)):
+            return a.id
+    return None
 
 
 def _resolve_mentions(hub: Hub, room_id: str, content: str) -> list[str]:

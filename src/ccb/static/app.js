@@ -39,6 +39,9 @@ createApp({
       mention: { open: false, items: [], index: 0, start: -1 },
       // 正在回复的目标消息（QQ 式引用）：{ id, sender_name, preview }，null 表示不引用。
       replyTo: null,
+      // 经 @ 自动补全**明确选中**的参与者：[{ id, name }]。发送时按 agentid 显式带给服务端，
+      // 让"这条主要发给谁"不再只靠正文文本解析（重名/措辞都不怕）。
+      pickedMentions: [],
     };
   },
 
@@ -237,6 +240,7 @@ createApp({
     selectRoom(id) {
       this.currentRoomId = id;
       this.replyTo = null;            // 切主题：清掉上个主题里选中的回复目标
+      this.pickedMentions = [];       // 以及上个主题里选中的 @ 接收者
       this.closeMention();
       this.stick = true;
       // 切换主题时用平滑滚动（仅此一处），保留切换的顺滑观感。
@@ -261,9 +265,16 @@ createApp({
       if (!text || !this.currentRoomId) return;
       const body = { content: text };
       if (this.replyTo) body.reply_to = this.replyTo.id;
+      // 仅保留 @名字仍在正文里的选中项，按 agentid 显式带给服务端；首个作为"主要接收者"(to)。
+      const picked = this.pickedMentions.filter((p) => text.includes("@" + p.name));
+      if (picked.length) {
+        body.mentions = picked.map((p) => p.id);
+        body.to = picked[0].id;
+      }
       this.api("POST", `/api/rooms/${this.currentRoomId}/messages`, body).catch(() => {});
       this.draft = "";
       this.replyTo = null;
+      this.pickedMentions = [];
       const el = this.$refs.composer;
       if (el) el.style.height = "auto";
     },
@@ -333,6 +344,10 @@ createApp({
       const before = this.draft.slice(0, this.mention.start);
       const insert = `@${agent.name} `;
       this.draft = before + insert + this.draft.slice(pos);
+      // 记下这次明确选中的 agentid，发送时作为显式接收者约束（首个即"主要发给谁"）。
+      if (!this.pickedMentions.some((p) => p.id === agent.id)) {
+        this.pickedMentions.push({ id: agent.id, name: agent.name });
+      }
       this.closeMention();
       this.$nextTick(() => {
         if (!el) return;

@@ -72,6 +72,13 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
      --reply-to msg_ab12cd34
    ```
 
+   想**明确这条主要发给谁**（不只在正文里 @，避免重名/措辞歧义），加 `--to <对方职责/名字/agent_id>`——
+   它按 id 规范写入消息，对方会在 `wait` 里看到 `‹@你·主要找你›`：
+
+   ```bash
+   python "$SKILL_DIR/ccb_peer.py" send --text "/v2/users 改造请你这边先评估" --to web端
+   ```
+
 4. **按职责把别的仓库拉进来**（你主动拉人）：
 
    ```bash

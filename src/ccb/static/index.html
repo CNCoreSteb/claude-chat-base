@@ -131,6 +131,9 @@
             <div class="msg-body min-w-0" @contextmenu.prevent="startReply(m)">
               <div class="msg-head d-flex align-items-baseline gap-2">
                 <span class="fw-semibold" :style="{ color: m.color || 'var(--bs-body-color)' }">{{ m.sender_name }}</span>
+                <span v-if="m.meta && m.meta.to && agents[m.meta.to]" class="small fw-semibold mention-to"
+                      :style="{ color: agents[m.meta.to].color || 'var(--bs-primary)' }"
+                      :title="'主要发给 ' + agents[m.meta.to].name">→ @{{ agents[m.meta.to].name }}</span>
                 <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
                 <span v-if="m.meta && m.meta.is_question" class="badge"
                       :class="answeredQuestionIds.has(m.id) ? 'text-bg-success' : 'text-bg-warning'">

@@ -118,6 +118,8 @@ body { overflow: hidden; }
   padding: 0 3px;
   font-weight: 600;
 }
+/* 消息头部的「主要发给谁」指示：→ @某人（用对方颜色，不换行）。 */
+.mention-to { white-space: nowrap; }
 .stream-cursor::after {
   content: "▋";
   color: var(--bs-primary);

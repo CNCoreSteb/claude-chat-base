@@ -289,10 +289,14 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     # ----- 收发消息 -----------------------------------------------------------
 
     @mcp.tool()
-    async def send_message(content: str, topic: str = "", reply_to: str = "") -> str:
+    async def send_message(content: str, topic: str = "", reply_to: str = "", to: str = "") -> str:
         """发言。`topic` 指定目标主题（缺省=当前主题）。`reply_to` 传入某条消息的 id（即
         wait_for_messages 里每条消息的 «id»）就能像 QQ 那样**引用回复**它——被点名后回执
-        务必带上，好让对方在一堆「收到」里认出你在回应哪条。所有成员与 GUI 即时可见。"""
+        务必带上，好让对方在一堆「收到」里认出你在回应哪条。
+
+        `to` 明确指定这条**主要发给谁**（对方的职责/名字/agent_id）：它按 id 规范写入消息，
+        让对方在 wait 里看到 ‹@你·主要找你›，比只在正文里写 @ 更明确、不怕重名或措辞歧义。
+        所有成员与 GUI 即时可见。"""
         if not _session["agent_id"]:
             return "请先 connect / join_room。"
         # 路由优先级：显式 topic > 被回消息所在主题（reply_to）> 当前主题。
@@ -313,6 +317,7 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                     "content": content,
                     "agent_id": _session["agent_id"],
                     "reply_to": reply_to,
+                    "to": to,
                 },
             )
             resp.raise_for_status()
@@ -437,8 +442,8 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             room = f"[{m.get('room_name', '')}] " if m.get("room_name") else ""
             meta = m.get("meta") or {}
             tag = ""
-            if aid in (meta.get("mentions") or []) and m["sender_id"] != aid:
-                tag = " ‹@你·被点名›"
+            if m["sender_id"] != aid and aid in (meta.get("mentions") or []):
+                tag = " ‹@你·主要找你›" if meta.get("to") == aid else " ‹@你·被点名›"
                 mentioned_any = True
             quote = ""
             if meta.get("reply_to_sender"):

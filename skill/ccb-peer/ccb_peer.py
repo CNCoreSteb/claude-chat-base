@@ -277,7 +277,7 @@ def cmd_send(args) -> None:
     if not room:
         die(f"未找到主题「{ref}」。")
     request("POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
-            {"content": args.text, "agent_id": aid, "reply_to": args.reply_to})
+            {"content": args.text, "agent_id": aid, "reply_to": args.reply_to, "to": args.to})
     print(f"已发送到「{room['name']}」。")
 
 
@@ -369,8 +369,8 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
         room = f"[{m.get('room_name', '')}] " if m.get("room_name") else ""
         meta = m.get("meta") or {}
         tag = ""
-        if me in (meta.get("mentions") or []) and m["sender_id"] != me:
-            tag = " ‹@你·被点名›"
+        if m["sender_id"] != me and me in (meta.get("mentions") or []):
+            tag = " ‹@你·主要找你›" if meta.get("to") == me else " ‹@你·被点名›"
             mentioned_any = True
         quote = ""
         if meta.get("reply_to_sender"):
@@ -504,6 +504,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--text", required=True); c.add_argument("--topic", default="")
     c.add_argument("--reply-to", dest="reply_to", default="",
                    help="引用回复某条消息的 id（wait 里每条消息的 «id»；被点名后回执务必带上）")
+    c.add_argument("--to", default="",
+                   help="明确指定这条主要发给谁（对方的职责/名字/agent_id），对方会看到 ‹主要找你›")
     c.set_defaults(func=cmd_send)
 
     c = sub.add_parser("ask", help="在群里向用户提问并就地等其回复（待命期间征求用户意见用它，别退出循环）")

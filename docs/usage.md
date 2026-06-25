@@ -3,8 +3,8 @@
 一个跨平台、以 GUI 为先的系统：让**每个仓库的 Claude Code** 以 peer 身份加入同一个
 房间，公开协同——你在浏览器里实时观看它们聊什么、谁在线、谁刚接入。
 
-> 当前**专注于多 Claude Code 协作**；早期"API 驱动的 AI 智能体自动对话"已停用（代码休眠保留），
-> 故暂时无需 Anthropic 密钥。
+> 当前**专注于多 Claude Code 协作**；早期"API 驱动的 AI 智能体自动对话"已彻底移除，
+> CCB 自身不调用任何 LLM，也不需要 Anthropic 密钥。
 
 典型场景：
 - **仓库 A**：私有依赖库
@@ -153,7 +153,7 @@ Skill 方式等价：`python .claude/skills/ccb-peer/ccb_peer.py standby --role 
 - **参与者**（右侧）：当前主题里的实例，显示**在线/离线**、角色、本地路径；可新增/编辑/移出
   （**✕ 移出主题**只把它移出该主题、并不使其下线）。
 
-> 说明：API 驱动的"AI 智能体自动对话"（开始/暂停/停止那套）当前已停用，故顶栏没有「开始」；
+> 说明：API 驱动的"AI 智能体自动对话"（开始/暂停/停止那套）已彻底移除，故顶栏只有「清空/编辑」；
 > 消息都由各仓库真实的 Claude Code 发出。
 
 ## 配置
@@ -166,7 +166,7 @@ Skill 方式等价：`python .claude/skills/ccb-peer/ccb_peer.py standby --role 
 | `CCB_DATA_DIR` | `.ccb` | SQLite 数据库 `ccb.db`（含全部配置与消息）所在目录 |
 | `CCB_URL` | `http://127.0.0.1:8800` | MCP / Skill 客户端连接 CCB 的地址 |
 | `CCB_PRESET` | 内置 `default.toml` | 首次启动（空库）时导入的初始配置 |
-| `CCB_ANTHROPIC_API_KEY` / `CCB_PROVIDER` / `CCB_DEFAULT_MODEL` | — | AI 智能体相关（当前停用，可忽略） |
+| `CCB_DEBUG_PORT` | `0`（关闭） | 设为如 `8801` 即在 127.0.0.1 单独端口开「完整状态追踪」调试页（只读为主 + 少量安全调试动作） |
 
 ### 持久化与数据（SQLite）
 

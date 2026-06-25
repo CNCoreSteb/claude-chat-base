@@ -8,7 +8,7 @@
   - Windows（PowerShell）：`irm https://astral.sh/uv/install.ps1 | iex`
   - Linux / macOS：`curl -LsSf https://astral.sh/uv/install.sh | sh`
 - 要接入真实仓库时，需要本机装好 `claude`（Claude Code CLI）。
-- 不需要 Anthropic 密钥：当前**专注多 Claude Code 协作**，API 驱动的 AI 智能体自动对话已停用。
+- 不需要 Anthropic 密钥：CCB **专注多 Claude Code 协作**、自身不调用任何 LLM（早期 API 驱动的 AI 自动对话已移除）。
 
 ## 1. 启动服务
 
@@ -30,7 +30,7 @@ uv run ccb
 
 > 还没有任何"仓库槽位"——这是故意的。各仓库的 Claude Code 连上来会**自己注册**。
 
-常用参数：`uv run ccb --port 9000 --no-browser --provider mock`。
+常用参数：`uv run ccb --port 9000 --no-browser --debug-port 8801`（`--debug-port` 在 127.0.0.1 开调试页）。
 
 ## 2. 接入第一个仓库（二选一）
 
@@ -98,7 +98,7 @@ python .claude/skills/ccb-peer/ccb_peer.py send --text "/v2/users 下周改造�
 - **实例显示离线**：MCP 方式下，`ccb-mcp` 桥接进程会后台心跳（零 token）自动维持在线，
   随会话退出而离线；无需为此空轮询。Skill 方式没有常驻进程，"在线"取决于最近是否有活动。
 - **重置数据**：删除数据目录 `.ccb/`（含 `ccb.db`）即可清空所有主题与历史。
-- **关于 AI 智能体**：API 驱动的自动对话当前已停用（专注多 Claude Code 协作），无需 Anthropic 密钥。
+- **关于 AI 智能体**：API 驱动的自动对话已彻底移除（CCB 专注多 Claude Code 协作、自身不调用 LLM），无需 Anthropic 密钥。
 - **待命会持续耗 token 吗**：待命是反复长轮询，空等时几乎不耗，但每轮 `wait` 返回仍是一次模型回合，
   会有少量成本且上下文缓慢增长——只需"挂着被叫醒"时用它最简单。
 

@@ -55,6 +55,10 @@ createApp({
     showJumpLatest() { return !this.stick && this.currentMessages.length > 0; },
     // 当前主题的应答位状态（应答编排）；active 时才在头部显示"谁正在回答/排队"。
     currentFloor() { return this.floors[this.currentRoomId] || null; },
+    floorScopeLabel() {
+      return ({ off: "关闭", human: "仅我的提问", broadcast: "所有广播问题" })[this.server.floor_scope]
+        || this.server.floor_scope;
+    },
     // 被视为"已回复"的提问 id 集合：仅当**用户（human）引用回复了这条提问本身**才算。
     // 不再用"提问之后出现过任何人类发言"来判断——否则用户引用回复其它消息、或发别的与
     // 该提问无关的消息时，会把尚未回答的提问误标为"已回复"。要标记某条提问为已回复，
@@ -288,6 +292,10 @@ createApp({
     },
     // 应答编排配置（scope: off/human/broadcast，enforcement: soft/hard）。
     setFloorConfig(patch) { this.api("PATCH", "/api/answer-floor", patch).catch(() => {}); },
+    openSettings() {
+      this._settingsOpener = document.activeElement;   // 关闭后把焦点还回触发按钮
+      this.bsSettings.show();
+    },
     deleteRoom(room) {
       if (!room) return;
       if (confirm(`删除主题「${room.name}」？该主题的全部消息也会一并删除，且不可恢复。`)) {
@@ -521,6 +529,8 @@ createApp({
 
   mounted() {
     this.bsModal = new bootstrap.Modal(this.$refs.modal);
+    this.bsSettings = new bootstrap.Modal(this.$refs.settingsModal);
+    this.$refs.settingsModal.addEventListener("hidden.bs.modal", () => this._settingsOpener?.focus());
     this.bsToast = new bootstrap.Toast(this.$refs.toast, { delay: 2600 });
     // 弹窗关闭后把焦点还给触发按钮；打开后自动聚焦首个表单控件（焦点捕获由 Bootstrap 负责）。
     this.$refs.modal.addEventListener("hidden.bs.modal", () => this._modalOpener?.focus());

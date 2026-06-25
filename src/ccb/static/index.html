@@ -33,9 +33,13 @@
           <div class="fw-bold">Claude Chat Base</div>
           <div class="text-secondary small text-uppercase" style="letter-spacing:2px">智能体群聊</div>
         </div>
-        <button class="btn btn-sm btn-outline-secondary ms-auto" @click="toggleTheme"
-                :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
-                :title="theme === 'dark' ? '浅色模式' : '深色模式'">{{ theme === 'dark' ? '☀️' : '🌙' }}</button>
+        <div class="ms-auto d-flex gap-1">
+          <button class="btn btn-sm btn-outline-secondary" @click="openSettings"
+                  aria-label="设置" title="设置">⚙</button>
+          <button class="btn btn-sm btn-outline-secondary" @click="toggleTheme"
+                  :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
+                  :title="theme === 'dark' ? '浅色模式' : '深色模式'">{{ theme === 'dark' ? '☀️' : '🌙' }}</button>
+        </div>
       </div>
 
       <div class="pane-head">
@@ -89,29 +93,15 @@
       </ul>
 
       <div class="server-card small text-secondary mt-auto m-3 p-3 border rounded">
-        <div>多 Claude Code 协作 · 本地运行</div>
-        <div>数据持久化于 <span class="font-monospace">.ccb/ccb.db</span></div>
-        <!-- 应答编排：避免广播问题被多个实例一拥而上重复回答 -->
-        <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
-          <span title="避免广播问题被多个实例一拥而上重复回答">应答编排</span>
-          <select class="form-select form-select-sm w-auto py-0" aria-label="应答编排范围"
-                  :value="server.floor_scope" @change="setFloorConfig({ scope: $event.target.value })">
-            <option value="off">关闭</option>
-            <option value="human">仅我的提问</option>
-            <option value="broadcast">所有广播问题</option>
-          </select>
-          <select v-if="server.floor_scope && server.floor_scope !== 'off'"
-                  class="form-select form-select-sm w-auto py-0" aria-label="应答编排强度"
-                  :value="server.floor_enforcement"
-                  @change="setFloorConfig({ enforcement: $event.target.value })">
-            <option value="soft">软·提示</option>
-            <option value="hard">硬·拦截</option>
-          </select>
+        <div class="d-flex align-items-center">
+          <span>多 Claude Code 协作 · 本地运行</span>
+          <button class="btn btn-sm btn-link p-0 ms-auto text-secondary"
+                  @click="openSettings" title="设置" aria-label="设置">⚙ 设置</button>
         </div>
-        <!-- AI 自动对话停用：隐藏 提供方/模型/API Key 提示
-        <div>提供方 <span class="badge">{{ server.provider }}</span></div>
-        <div>模型：{{ server.default_model }}</div>
-        -->
+        <div>数据持久化于 <span class="font-monospace">.ccb/ccb.db</span></div>
+        <div v-if="server.floor_scope && server.floor_scope !== 'off'">
+          应答编排：{{ floorScopeLabel }} · {{ server.floor_enforcement === 'hard' ? '硬·拦截' : '软·提示' }}
+        </div>
       </div>
     </aside>
 
@@ -280,6 +270,75 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" @click="hideModal">取消</button>
             <button type="button" class="btn btn-primary" @click="saveModal">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 设置面板 -->
+    <div class="modal fade" tabindex="-1" role="dialog" aria-modal="true"
+         aria-labelledby="ccbSettingsTitle" ref="settingsModal">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title h6 mb-0" id="ccbSettingsTitle">⚙ 设置</h2>
+            <button type="button" class="btn-close" aria-label="关闭" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <!-- 外观 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-2">外观</div>
+              <div class="btn-group btn-group-sm" role="group" aria-label="主题">
+                <button type="button" class="btn"
+                        :class="theme === 'light' ? 'btn-primary' : 'btn-outline-secondary'"
+                        @click="applyTheme('light', true)">☀️ 浅色</button>
+                <button type="button" class="btn"
+                        :class="theme === 'dark' ? 'btn-primary' : 'btn-outline-secondary'"
+                        @click="applyTheme('dark', true)">🌙 深色</button>
+              </div>
+            </section>
+
+            <!-- 应答编排 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-1">应答编排</div>
+              <p class="text-secondary small mb-2">
+                避免一个问题被多个实例一拥而上重复回答：第一个认领的来答，其余排队、读完它的
+                答复后再做定向补充。改动即时生效。
+              </p>
+              <label class="form-label small mb-1" for="set-floor-scope">触发范围</label>
+              <select id="set-floor-scope" class="form-select form-select-sm mb-3"
+                      :value="server.floor_scope"
+                      @change="setFloorConfig({ scope: $event.target.value })">
+                <option value="off">关闭</option>
+                <option value="human">仅我（GUI 用户）的提问</option>
+                <option value="broadcast">所有广播问题</option>
+              </select>
+              <div v-if="server.floor_scope && server.floor_scope !== 'off'">
+                <label class="form-label small mb-1" for="set-floor-enf">执行强度</label>
+                <select id="set-floor-enf" class="form-select form-select-sm"
+                        :value="server.floor_enforcement"
+                        @change="setFloorConfig({ enforcement: $event.target.value })">
+                  <option value="soft">软 · 仅提示（实例自觉让行）</option>
+                  <option value="hard">硬 · 拦截（非应答位的回答被服务端挡回）</option>
+                </select>
+              </div>
+            </section>
+
+            <!-- 服务信息（只读） -->
+            <section>
+              <div class="fw-semibold mb-2">服务</div>
+              <dl class="row small text-secondary mb-0">
+                <dt class="col-4">提供方</dt>
+                <dd class="col-8">{{ server.provider || '—' }}</dd>
+                <dt class="col-4">默认模型</dt>
+                <dd class="col-8 font-monospace text-truncate">{{ server.default_model || '—' }}</dd>
+                <dt class="col-4">数据</dt>
+                <dd class="col-8 font-monospace">.ccb/ccb.db</dd>
+              </dl>
+            </section>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" data-bs-dismiss="modal">完成</button>
           </div>
         </div>
       </div>

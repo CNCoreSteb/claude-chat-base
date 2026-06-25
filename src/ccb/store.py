@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 import threading
 from pathlib import Path
@@ -21,8 +22,8 @@ from pathlib import Path
 from .models import Agent, Message, Room
 
 # 不写入配置（DB）的运行期字段——重启后应回到默认值。
-_AGENT_RUNTIME_FIELDS = {"status", "online", "last_seen"}
-_ROOM_RUNTIME_FIELDS = {"status", "turn"}
+_AGENT_RUNTIME_FIELDS = {"online", "last_seen"}
+_ROOM_RUNTIME_FIELDS: set[str] = set()
 
 RECENT_LIMIT = 120  # 快照/最近消息默认返回的条数
 HISTORY_LIMIT = 200  # 构造提示词时读取的最近历史条数
@@ -221,6 +222,66 @@ class Store:
         with self._lock:
             self._conn.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
             self._conn.commit()
+
+    # ----- 只读调试统计（供调试页；都用单连接+锁、只走廉价索引聚合，不扫全表内容）-----------
+
+    @property
+    def last_ts(self) -> float:
+        return self._last_ts
+
+    def lock_locked(self) -> bool:
+        return self._lock.locked()
+
+    def messages_tail(self, limit: int = 50) -> list[Message]:
+        """按时间倒序返回最近 limit 条（跨房间），newest first。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages ORDER BY ts DESC, rowid DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [_row_to_message(r) for r in rows]
+
+    def db_stats(self) -> dict:
+        with self._lock:
+            total = self._conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()["n"]
+            rows = self._conn.execute(
+                "SELECT room_id, COUNT(*) AS n, MIN(ts) AS mn, MAX(ts) AS mx "
+                "FROM messages GROUP BY room_id"
+            ).fetchall()
+            mx = self._conn.execute("SELECT MAX(ts) AS m FROM messages").fetchone()["m"]
+            n_agents = self._conn.execute("SELECT COUNT(*) AS n FROM agents").fetchone()["n"]
+            n_rooms = self._conn.execute("SELECT COUNT(*) AS n FROM rooms").fetchone()["n"]
+        known = set(self.rooms.keys())
+        per_room = [
+            {"room_id": r["room_id"], "count": r["n"], "min_ts": r["mn"], "max_ts": r["mx"]}
+            for r in rows
+        ]
+        return {
+            "total_messages": total,
+            "per_room_counts": per_room,
+            "orphan_room_ids": [r["room_id"] for r in rows if r["room_id"] not in known],
+            "db_max_ts": mx,
+            "last_ts_cursor": self._last_ts,
+            "agents_in_db": n_agents, "rooms_in_db": n_rooms,
+            "agents_in_memory": len(self.agents), "rooms_in_memory": len(self.rooms),
+        }
+
+    def pragma_stats(self) -> dict:
+        with self._lock:
+            def p(name: str):
+                return self._conn.execute(f"PRAGMA {name}").fetchone()[0]
+            jm, fk = p("journal_mode"), p("foreign_keys")
+            pc, ps, fl = p("page_count"), p("page_size"), p("freelist_count")
+        return {"journal_mode": jm, "foreign_keys": fk, "page_count": pc,
+                "page_size": ps, "freelist_count": fl, "logical_size_bytes": pc * ps}
+
+    def file_sizes(self) -> dict:
+        def sz(path: str) -> int | None:
+            try:
+                return os.path.getsize(path)
+            except OSError:
+                return None
+        base = str(self.db_path)
+        return {"db": sz(base), "wal": sz(base + "-wal"), "shm": sz(base + "-shm")}
 
 
 def _row_to_message(row: sqlite3.Row) -> Message:

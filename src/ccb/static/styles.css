@@ -48,7 +48,6 @@ body { overflow: hidden; }
   background: var(--bs-secondary-color);
 }
 .dot.running { background: #34d399; box-shadow: 0 0 8px #34d399; animation: pulse 1.4s infinite; }
-.dot.paused { background: #fbbf24; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 .swatch { width: 12px; height: 12px; border-radius: 4px; flex-shrink: 0; }
@@ -120,13 +119,6 @@ body { overflow: hidden; }
 }
 /* 消息头部的「主要发给谁」指示：→ @某人（用对方颜色，不换行）。 */
 .mention-to { white-space: nowrap; }
-.stream-cursor::after {
-  content: "▋";
-  color: var(--bs-primary);
-  margin-left: 1px;
-  animation: blink 1s steps(2) infinite;
-}
-@keyframes blink { 50% { opacity: 0; } }
 
 .composer textarea { resize: none; max-height: 140px; }
 

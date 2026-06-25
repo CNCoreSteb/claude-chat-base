@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 import time
 
 from ccb.config import Settings
 from ccb.hub import PEER_STALE_SECONDS, Hub
 from ccb.models import Agent, AgentCreate, AgentKind, RoomCreate
-from ccb.orchestrator import Orchestrator
+from ccb.store import Store
 
 
 def _hub(tmp_path) -> Hub:
-    settings = Settings(provider="mock", anthropic_api_key=None, data_dir=tmp_path / "data")
-    h = Hub(settings)
-    h.orchestrator = Orchestrator(h)
-    return h
+    settings = Settings(data_dir=tmp_path / "data")
+    return Hub(settings)
 
 
 async def test_gui_config_persists_across_restart(tmp_path):
@@ -68,3 +68,47 @@ async def test_peer_online_marking_and_reconcile(tmp_path):
     peer.last_seen = time.time() - PEER_STALE_SECONDS - 5
     await h.reconcile_peers()
     assert peer.online is False
+
+
+def test_legacy_ai_kind_coerced_to_peer():
+    # AI 功能删除后，历史里 kind="ai" 等旧值必须兼容为 peer（否则旧 .ccb 加载会 ValidationError）。
+    a = Agent.model_validate({"name": "旧AI", "kind": "ai", "model": "claude-sonnet-4-6",
+                              "provider": "anthropic", "temperature": 0.5, "status": "thinking"})
+    assert a.kind == AgentKind.PEER
+    dumped = a.model_dump()
+    for gone in ("model", "provider", "temperature", "status"):
+        assert gone not in dumped, f"已删字段 {gone} 不应再出现在 Agent 上"
+    assert AgentCreate.model_validate({"name": "x", "kind": "ai"}).kind == AgentKind.PEER
+    assert not hasattr(AgentKind, "AI")
+
+
+def test_legacy_ai_era_db_rows_load_and_coerce(tmp_path):
+    # 模拟一个「AI 时代」的旧数据库：agents/rooms 的 data 列里带有现已删除的字段。
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    db_path = data_dir / "ccb.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE agents (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+    conn.execute("CREATE TABLE rooms (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+    conn.execute(
+        "CREATE TABLE messages (id TEXT PRIMARY KEY, room_id TEXT, sender_id TEXT,"
+        " sender_name TEXT, role TEXT, content TEXT, ts REAL, color TEXT, meta TEXT)"
+    )
+    conn.execute("INSERT INTO agents VALUES(?,?)", ("agent_old", json.dumps({
+        "id": "agent_old", "name": "旧AI", "kind": "ai", "role": "后端",
+        "model": "claude-sonnet-4-6", "provider": "anthropic", "temperature": 0.7,
+        "status": "speaking", "color": "#fff", "enabled": True,
+    })))
+    conn.execute("INSERT INTO rooms VALUES(?,?)", ("room_old", json.dumps({
+        "id": "room_old", "name": "旧厅", "topic": "t", "agent_ids": ["agent_old"],
+        "strategy": "director", "status": "running", "max_turns": 18, "turn_delay": 1.2, "turn": 3,
+    })))
+    conn.commit()
+    conn.close()
+
+    store = Store(data_dir)  # _load_state 必须能加载这些旧行而不崩
+    a = store.get_agent("agent_old")
+    assert a is not None and a.kind == AgentKind.PEER and a.role == "后端"
+    r = store.get_room("room_old")
+    assert r is not None and r.name == "旧厅" and r.agent_ids == ["agent_old"]
+    store.close()

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CCB 仓库 peer 客户端（独立、仅用标准库）。
 
-让一个 Claude Code 实例**无需 MCP**、仅凭 HTTP 就能加入 CCB 多仓库群聊：自注册、
+让一个 Claude Code 实例无需 MCP、仅凭 HTTP 就能加入 CCB 多仓库群聊：自注册、
 收发消息、按职责拉别的实例进群。把本目录（含 SKILL.md）丢进仓库的 .claude/skills/
 即可，Agent 会照 SKILL.md 运行这个脚本。
 
@@ -27,11 +27,34 @@ import urllib.request
 DEFAULT_URL = os.environ.get("CCB_URL", "http://127.0.0.1:8800").rstrip("/")
 STATE_PATH = os.environ.get("CCB_PEER_STATE", os.path.join(os.getcwd(), ".ccb-peer.json"))
 
-# 单次 wait/read/ask 渲染上限：避免一次性输出过多/过长消息把工具结果撑爆（超限会被截断落盘、
-# 污染上下文）。只渲染最近 MAX_WAIT_MESSAGES 条 + 所有点名你的消息，其余折叠计数；单条正文超过
-# MAX_MSG_CHARS 截断。游标仍按全量推进（不重复投递被折叠的旧消息）。与 MCP 桥接保持一致。
-MAX_WAIT_MESSAGES = 30
-MAX_MSG_CHARS = 400
+# 单次 wait/read/ask 渲染上限：避免一次性输出撑爆工具结果。点名你的一律保留；其余从最近往前累计
+# 到「条数」或「总字符预算」为止，更早的折叠；单条正文只在真正超长(>MAX_MSG_CHARS)时才截断——别把
+# 正常技术长消息切碎。游标仍按全量推进、不重复投递。与 MCP 桥接保持一致。
+MAX_WAIT_MESSAGES = 40
+MAX_MSG_CHARS = 2000
+MAX_WAIT_TOTAL_CHARS = 16000
+
+
+def select_rendered(msgs, aid):
+    """挑出本次要渲染的：点名你的一律保留；其余从最近往前按「条数 + 总字符预算」累计，更早的
+    折叠。返回 (按原顺序的待渲染列表, 被折叠条数)。须与 MCP 桥接的同名函数行为一致。"""
+    def _mentions_me(m):
+        return m["sender_id"] != aid and aid in ((m.get("meta") or {}).get("mentions") or [])
+
+    def _clen(m):
+        return min(len(m.get("content") or ""), MAX_MSG_CHARS)
+
+    keep = {m["id"] for m in msgs if _mentions_me(m)}
+    total = sum(_clen(m) for m in msgs if m["id"] in keep)
+    count = 0
+    for m in reversed(msgs):
+        if m["id"] in keep:
+            continue
+        if count >= MAX_WAIT_MESSAGES or total + _clen(m) > MAX_WAIT_TOTAL_CHARS:
+            continue
+        keep.add(m["id"]); total += _clen(m); count += 1
+    shown = [m for m in msgs if m["id"] in keep]
+    return shown, len(msgs) - len(shown)
 
 
 # ----- 会话状态 --------------------------------------------------------------
@@ -62,7 +85,7 @@ def base_url(state: dict) -> str:
 def request_status(method: str, url: str, body: dict | None = None, timeout: float = 35.0):
     """发请求并返回 (status_code, parsed_body_or_raw_text)。
 
-    仅在**连接层**失败（服务未启动 / 网络不可达 / 超时）时直接退出；HTTP 4xx/5xx 会把状态码
+    仅在连接层失败（服务未启动 / 网络不可达 / 超时）时直接退出；HTTP 4xx/5xx 会把状态码
     与响应体原样返回，交由调用方决定是友好处理（如 invite 的 404）还是 die。
     """
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -179,10 +202,10 @@ def cmd_standby(args) -> None:
         "（消息带 ‹@你·被点名›）时先 `send --text \"收到，正在处理\" --reply-to <该消息id>` 回执，"
         "再读改本仓库代码用 `send --text` 给结果；与你无关的忽略，继续 `wait`。\n"
         "要征求用户意见时用 `ask --text \"问题\"`：它把问题发到群里（GUI 高亮\"等你回答\"）并就地"
-        "等用户回复，期间你始终在线——**不要**用 AskUserQuestion、也**不要**结束回合去问本地用户"
+        "等用户回复，期间你始终在线——不要用 AskUserQuestion、也不要结束回合去问本地用户"
         "（那等于擅自退出待命）。待命期间你的「用户」就是 CCB 群里(GUI 旁)的人。\n"
         "让你「离开本大厅/退出某主题/你可以走了」时：用 `leave --topic <主题>` 退出那个主题即可，"
-        "你仍在线、仍待命、可被 invite 拉回（即便不在任何主题也继续 `wait`），**别 disconnect**。\n"
+        "你仍在线、仍待命、可被 invite 拉回（即便不在任何主题也继续 `wait`），别 disconnect。\n"
         "只有用户明确说「退出待命/下线/停止」要你整体下线时，才执行 `disconnect`。"
     )
 
@@ -314,13 +337,17 @@ def cmd_claim(args) -> None:
                    {"agent_id": aid})
     floor = data.get("floor", {})
     if data.get("granted"):
-        print(f"✅ 已取得「{room['name']}」的应答位——你来回答。答完务必 `release` 放行下一位。")
+        print(f"已取得「{room['name']}」的应答位——你来回答。答完务必 `release` 放行下一位。")
+        return
+    if not floor.get("holder") and not floor.get("active"):
+        print("当前没有进行中的提问轮——无需抢答位，继续 `wait` 即可；等出现面向所有人的提问再 `claim`。")
         return
     queue = floor.get("queue") or []
     pos = queue.index(aid) + 1 if aid in queue else len(queue)
     holder = floor.get("holder_name") or "其他实例"
-    print(f"⏳ {holder} 正在回答，你排第 {pos} 位。先别答——`wait` 观望、读它的答复；确有必要补充才"
-          "排队，轮到你（再 `claim` 显示 ✅）发定向回复（`send --reply-to`）再 `release`；无需补充就 `release`。")
+    print(f"{holder} 正在回答，你排第 {pos} 位。先别答——`wait` 观望、读它的答复；确有必要补充才"
+          "排队，轮到你（再 `claim` 抢到应答位）后发定向回复（`send --reply-to`）再 `release`；"
+          "无需补充就 `release`。")
 
 
 def cmd_release(args) -> None:
@@ -365,7 +392,7 @@ def cmd_ask(args) -> None:
     """在群里向用户提问并就地等待答复——待命期间想征求用户意见时用它，别退出循环去问本地用户。"""
     state = load_state()
     if state.get("kicked"):
-        print("⛔ 你已被踢出 CCB（kicked）。请重新 standby 归队。")
+        print("你已被踢出 CCB（kicked）。请重新 standby 归队。")
         return
     aid = require_agent(state)
     ref = args.topic or state.get("active_room")
@@ -389,7 +416,7 @@ def cmd_ask(args) -> None:
         if any((m.get("meta") or {}).get("kicked") for m in msgs):
             state["kicked"] = True
             save_state(state)
-            print("⛔ 你已被踢出 CCB（kicked），提问中止。请重新 standby 归队。")
+            print("你已被踢出 CCB（kicked），提问中止。请重新 standby 归队。")
             return
         ask_since = max(m["ts"] for m in msgs)  # 仅推进本地游标
         rooms_map = state.setdefault("msg_rooms", {})
@@ -433,8 +460,8 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
         # 没有"继续轮询"的约束，模型容易误判"没事干了"而结束、掉出待命循环。
         if is_wait:
             print("（没有新消息）\n"
-                  "— 待命提醒：没有新消息是**正常**的，请**立刻再次** `wait` 继续保持在线，"
-                  "**不要**就此结束；需要征求用户意见时用 `ask`（别用 AskUserQuestion）。")
+                  "— 待命提醒：没有新消息是正常的，请立刻再次 `wait` 继续保持在线，"
+                  "不要就此结束；需要征求用户意见时用 `ask`（别用 AskUserQuestion）。")
         else:
             print("（没有新消息）")
         return
@@ -443,7 +470,7 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
     if any((m.get("meta") or {}).get("kicked") for m in msgs):
         state["kicked"] = True
         save_state(state)
-        print("⛔ 你已被踢出 CCB（kicked）。待命已结束——请不要再 wait；如需归队请重新 standby。")
+        print("你已被踢出 CCB（kicked）。待命已结束——请不要再 wait；如需归队请重新 standby。")
         return
     state["last_ts"] = max(m["ts"] for m in msgs)
     me = state.get("agent_id")
@@ -463,10 +490,8 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
     def _mentions_me(m):
         return m["sender_id"] != me and me in ((m.get("meta") or {}).get("mentions") or [])
 
-    # 只渲染最近 MAX_WAIT_MESSAGES 条 + 所有点名你的消息，其余折叠（游标已按全量推进）。
-    keep = {m["id"] for m in msgs[-MAX_WAIT_MESSAGES:]} | {m["id"] for m in msgs if _mentions_me(m)}
-    shown = [m for m in msgs if m["id"] in keep]
-    omitted = len(msgs) - len(shown)
+    # 选出本次要渲染的（点名全留 + 最近优先按预算累计），其余折叠计数。
+    shown, omitted = select_rendered(msgs, me)
     if omitted:
         print(f"〔为避免刷屏/撑爆上下文，已折叠较早的 {omitted} 条消息（完整记录见 GUI）；"
               "点名你的一律保留在下方。〕")
@@ -479,6 +504,9 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
         if _mentions_me(m):
             tag = " ‹@你·主要找你›" if meta.get("to") == me else " ‹@你·被点名›"
             mentioned_any = True
+        elif meta.get("to") and meta.get("to") != me and m["sender_id"] != me:
+            # 主要发给别人——明确标注，免得对正文里的 @文本自作主张地抢答。
+            tag = f" 〔→ 主要发给 {meta.get('to_name') or '某实例'}，不是你〕"
         quote = ""
         if meta.get("reply_to_sender"):
             quote = f"（↩ 回复 {meta['reply_to_sender']}：{meta.get('reply_to_preview', '')}）"
@@ -488,7 +516,7 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
         print(f"{room}{m['sender_name']}{you}{tag} «{m['id']}»{quote}: {content}")
     if mentioned_any:
         print(
-            '\n⚠️ 你被点名（‹被点名›）：请先 `send --text "收到，正在处理" '
+            '\n你被点名（‹被点名›）：请先 `send --text "收到，正在处理" '
             "--reply-to <被点名那条的 «id»>` 回执（让对方认出你在回应哪条），再着手处理。"
         )
     if is_wait:
@@ -501,7 +529,7 @@ def _print_messages(state: dict, msgs: list, is_wait: bool = False) -> None:
 def cmd_wait(args) -> None:
     state = load_state()
     if state.get("kicked"):
-        print("⛔ 你已被踢出 CCB（kicked）。请不要再 wait；如需归队请重新 standby。")
+        print("你已被踢出 CCB（kicked）。请不要再 wait；如需归队请重新 standby。")
         return
     aid = require_agent(state)
     since = state.get("last_ts", 0.0)
@@ -541,7 +569,7 @@ def cmd_history(args) -> None:
 def cmd_read(args) -> None:
     state = load_state()
     if state.get("kicked"):
-        print("⛔ 你已被踢出 CCB（kicked）。请不要再 read/wait；如需归队请重新 standby。")
+        print("你已被踢出 CCB（kicked）。请不要再 read/wait；如需归队请重新 standby。")
         return
     aid = require_agent(state)
     since = state.get("last_ts", 0.0)
@@ -563,9 +591,9 @@ def cmd_peers(args) -> None:
         a = agents.get(aid)
         if not a:
             continue
-        on = "在线" if a.get("online") else ("—" if a["kind"] != "peer" else "离线")
+        on = "在线" if a.get("online") else "离线"
         tag = f"{a.get('role')}/" if a.get("role") else ""
-        print(f"- {a['name']}（{tag}{a['kind']}，{on}）")
+        print(f"- {a['name']}（{tag}peer，{on}）")
 
 
 def cmd_leave(args) -> None:
@@ -579,7 +607,7 @@ def cmd_leave(args) -> None:
     if state.get("active_room") == room["id"]:
         state["active_room"] = None
         save_state(state)
-    print(f"已退出主题「{room['name']}」。你仍在线、仍在待命（**没有下线**），可被 invite 随时拉回——"
+    print(f"已退出主题「{room['name']}」。你仍在线、仍在待命（没有下线），可被 invite 随时拉回——"
           "请继续 `wait` 保持在线；被重新邀请时会自动回到对话。")
 
 

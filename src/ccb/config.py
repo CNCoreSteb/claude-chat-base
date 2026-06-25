@@ -13,7 +13,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .models import Agent, AgentKind, Room, Strategy
+from .models import Agent, Room
 
 log = logging.getLogger("ccb.config")
 
@@ -33,16 +33,9 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 8800
-
-    anthropic_api_key: str | None = None
-    default_model: str = "claude-sonnet-4-6"
-    director_model: str = "claude-haiku-4-5-20251001"
-    # "auto" 在有密钥时选 anthropic，否则选 mock 提供方。
-    provider: str = "auto"
-
-    turn_delay: float = 1.2
-    max_turns: int = 24
-    max_tokens: int = 600  # 每条智能体消息的上限；让对话保持简短、省钱。
+    # 调试页端口（env CCB_DEBUG_PORT）：0/缺省=关闭。设为如 8801 即在该端口（强制 127.0.0.1）
+    # 启用一个只读为主的「完整状态追踪」调试页，与主服务共享同一个活的 Hub。无鉴权，故默认关闭。
+    debug_port: int = 0
 
     data_dir: Path = Path(".ccb")
     preset: Path = DEFAULT_PRESET
@@ -54,14 +47,8 @@ class Settings(BaseSettings):
     floor_scope: str = "human"
     floor_enforcement: str = "soft"
 
-    def resolved_provider(self) -> str:
-        """返回默认实际使用的提供方名称。"""
-        if self.provider != "auto":
-            return self.provider
-        return "anthropic" if self.anthropic_api_key else "mock"
 
-
-def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]]:
+def load_preset(path: Path) -> tuple[list[Agent], list[Room]]:
     """从 TOML 预设文件加载智能体与房间。
 
     若文件不存在则返回两个空列表，以保证服务端仍可正常启动。
@@ -82,12 +69,8 @@ def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]
         agent = Agent(
             name=raw["name"],
             persona=raw.get("persona", ""),
-            kind=AgentKind(raw.get("kind", "ai")),
             role=raw.get("role", ""),
             repo_path=raw.get("repo_path", ""),
-            model=raw.get("model") or default_model,
-            provider=raw.get("provider"),
-            temperature=raw.get("temperature", 0.8),
             color=raw.get("color", Agent.model_fields["color"].default),
             enabled=raw.get("enabled", True),
         )
@@ -98,15 +81,6 @@ def load_preset(path: Path, default_model: str) -> tuple[list[Agent], list[Room]
     for raw in data.get("rooms", []):
         # 预设里房间通过名字引用智能体，便于阅读。
         ids = [name_to_id[n] for n in raw.get("agents", []) if n in name_to_id]
-        rooms.append(
-            Room(
-                name=raw["name"],
-                topic=raw.get("topic", ""),
-                agent_ids=ids,
-                strategy=Strategy(raw.get("strategy", "director")),
-                max_turns=raw.get("max_turns", 24),
-                turn_delay=raw.get("turn_delay", 1.2),
-            )
-        )
+        rooms.append(Room(name=raw["name"], topic=raw.get("topic", ""), agent_ids=ids))
 
     return agents, rooms

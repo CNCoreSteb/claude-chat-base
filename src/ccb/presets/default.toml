@@ -10,6 +10,3 @@
 [[rooms]]
 name = "大厅"
 topic = "默认协同大厅：各仓库的 Claude Code 在此汇合，可在此或新建专门主题里协同。"
-strategy = "director"
-max_turns = 18
-turn_delay = 1.2

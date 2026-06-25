@@ -59,8 +59,7 @@
                     @click.stop="deleteRoom(r)" @keydown.enter.stop>✕</button>
           </div>
           <div class="small d-flex align-items-center gap-2 opacity-75">
-            <span class="dot" :class="r.status" aria-hidden="true"></span>
-            <span>{{ statusText(r.status) }} · {{ r.agent_ids.length }} 名成员</span>
+            <span>{{ r.agent_ids.length }} 名成员</span>
           </div>
         </li>
       </ul>
@@ -113,13 +112,6 @@
           <p class="text-secondary small mb-0">{{ currentRoom ? currentRoom.topic : '' }}</p>
         </div>
         <div v-if="currentRoom" class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
-          <!-- AI 自动对话已暂时停用：本项目当前专注于多 Claude Code 协作，故隐藏 轮数/开始/暂停/停止。
-          <span class="text-secondary small font-monospace">第 {{ currentRoom.turn }}/{{ currentRoom.max_turns }} 轮</span>
-          <button v-if="currentRoom.status !== 'running'" class="btn btn-sm btn-primary"
-                  @click="roomAction('start')">{{ currentRoom.status === 'paused' ? '继续' : '开始' }}</button>
-          <button v-else class="btn btn-sm btn-outline-light" @click="roomAction('pause')">暂停</button>
-          <button v-if="currentRoom.status !== 'idle'" class="btn btn-sm btn-outline-secondary" @click="roomAction('stop')">停止</button>
-          -->
           <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')" title="清空本主题消息">清空</button>
           <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
         </div>
@@ -140,7 +132,7 @@
           <p>各仓库的 Claude Code 接入后，协作消息会实时显示在这里。<br>你也可以在下方以人类身份直接插话。</p>
         </div>
         <div v-for="m in currentMessages" :key="m.id" class="msg"
-             :class="['msg--' + m.role, { streaming: m.streaming, 'msg--question': m.meta && m.meta.is_question && !answeredQuestionIds.has(m.id) }]">
+             :class="['msg--' + m.role, { 'msg--question': m.meta && m.meta.is_question && !answeredQuestionIds.has(m.id) }]">
           <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
           <template v-else>
             <div class="avatar" :style="{ background: m.color || 'var(--bs-secondary-bg)' }">{{ initials(m.sender_name) }}</div>
@@ -150,7 +142,6 @@
                 <span v-if="m.meta && m.meta.to && agents[m.meta.to]" class="small fw-semibold mention-to"
                       :style="{ color: agents[m.meta.to].color || 'var(--bs-primary)' }"
                       :title="'主要发给 ' + agents[m.meta.to].name">→ @{{ agents[m.meta.to].name }}</span>
-                <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
                 <span v-if="m.meta && m.meta.is_question" class="badge"
                       :class="answeredQuestionIds.has(m.id) ? 'text-bg-success' : 'text-bg-warning'">
                   {{ answeredQuestionIds.has(m.id) ? '✅ 已回复' : '❓ 等你回答' }}
@@ -163,7 +154,7 @@
                 <span class="msg-quote-sender">{{ m.meta.reply_to_sender }}</span>
                 <span class="msg-quote-text">{{ m.meta.reply_to_preview }}</span>
               </div>
-              <div class="msg-text"><span v-html="renderContent(m.content)"></span><span v-if="m.streaming" class="stream-cursor"></span></div>
+              <div class="msg-text"><span v-html="renderContent(m.content)"></span></div>
             </div>
           </template>
         </div>
@@ -328,10 +319,6 @@
             <section>
               <div class="fw-semibold mb-2">服务</div>
               <dl class="row small text-secondary mb-0">
-                <dt class="col-4">提供方</dt>
-                <dd class="col-8">{{ server.provider || '—' }}</dd>
-                <dt class="col-4">默认模型</dt>
-                <dd class="col-8 font-monospace text-truncate">{{ server.default_model || '—' }}</dd>
                 <dt class="col-4">数据</dt>
                 <dd class="col-8 font-monospace">.ccb/ccb.db</dd>
               </dl>

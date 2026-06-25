@@ -12,7 +12,7 @@ import uuid
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def _new_id(prefix: str) -> str:
@@ -24,23 +24,9 @@ def _now() -> float:
 
 
 class AgentKind(StrEnum):
-    """智能体产生消息的方式。"""
+    """智能体类型。每个 CCB 参与者都是一个外部 Claude Code 实例（peer）。"""
 
-    AI = "ai"  # 由编排器通过 LLM 提供方在本地生成。
-    PEER = "peer"  # 外部 Claude Code 实例通过 MCP 桥接发言。
-
-
-class Strategy(StrEnum):
-    """编排器决定下一个发言者的策略。"""
-
-    DIRECTOR = "director"  # 由 LLM 主持人提名下一个发言者。
-    ROUND_ROBIN = "round_robin"  # 在启用的 AI 智能体之间按顺序轮流。
-
-
-class RoomStatus(StrEnum):
-    IDLE = "idle"
-    RUNNING = "running"
-    PAUSED = "paused"
+    PEER = "peer"  # 外部 Claude Code 实例通过 MCP 桥接 / Skill 发言。
 
 
 # 一组精选的配色，让智能体在 GUI 中区分明显，且不必使用随机色。
@@ -54,20 +40,22 @@ class Agent(BaseModel):
     id: str = Field(default_factory=lambda: _new_id("agent"))
     name: str
     persona: str = ""
-    kind: AgentKind = AgentKind.AI
+    kind: AgentKind = AgentKind.PEER
     # 多仓库协同：该智能体代表的仓库角色与本地路径（peer 槽位的核心信息）。
     role: str = ""  # 例如：依赖库 / 手机端 / web端 / 后端
     repo_path: str = ""  # 该仓库在本机的路径，便于在对应目录启动 Claude Code
-    model: str | None = None  # 为 None 时回退到服务端默认模型。
-    provider: str | None = None  # "anthropic" | "mock" | None（用服务端默认）。
-    temperature: float = 0.8
     color: str = AGENT_COLORS[0]
     enabled: bool = True
-    # 仅运行期使用的字段（不是编排输入）；加载时会重置。
-    status: Literal["idle", "thinking", "speaking"] = "idle"
-    # peer 在线状态：预定义的仓库槽位在真实 Claude Code 接入前为离线。
+    # peer 在线状态：预定义的仓库槽位在真实 Claude Code 接入前为离线（仅运行期，加载时重置）。
     online: bool = False
     last_seen: float = 0.0
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _coerce_kind(cls, _v: object) -> str:
+        # AI 功能已删除：一切参与者皆为 peer。把历史数据库里的旧值（如 kind="ai"）一律兼容为
+        # peer，避免旧 .ccb 在启动加载时因非法枚举值而校验失败。
+        return "peer"
 
 
 class Message(BaseModel):
@@ -87,24 +75,21 @@ class Room(BaseModel):
     name: str
     topic: str = ""
     agent_ids: list[str] = Field(default_factory=list)
-    strategy: Strategy = Strategy.DIRECTOR
-    status: RoomStatus = RoomStatus.IDLE
-    max_turns: int = 24
-    turn_delay: float = 1.2
-    turn: int = 0  # 当前这一轮运行中已经进行的发言轮数。
 
 
 class AgentCreate(BaseModel):
     name: str
     persona: str = ""
-    kind: AgentKind = AgentKind.AI
+    kind: AgentKind = AgentKind.PEER
     role: str = ""
     repo_path: str = ""
-    model: str | None = None
-    provider: str | None = None
-    temperature: float = 0.8
     color: str | None = None
     enabled: bool = True
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _coerce_kind(cls, _v: object) -> str:
+        return "peer"  # 一切参与者皆为 peer；容忍旧客户端传入的 kind="ai" 等。
 
 
 class AgentUpdate(BaseModel):
@@ -112,9 +97,6 @@ class AgentUpdate(BaseModel):
     persona: str | None = None
     role: str | None = None
     repo_path: str | None = None
-    model: str | None = None
-    provider: str | None = None
-    temperature: float | None = None
     color: str | None = None
     enabled: bool | None = None
 
@@ -123,18 +105,12 @@ class RoomCreate(BaseModel):
     name: str
     topic: str = ""
     agent_ids: list[str] = Field(default_factory=list)
-    strategy: Strategy = Strategy.DIRECTOR
-    max_turns: int = 24
-    turn_delay: float = 1.2
 
 
 class RoomUpdate(BaseModel):
     name: str | None = None
     topic: str | None = None
     agent_ids: list[str] | None = None
-    strategy: Strategy | None = None
-    max_turns: int | None = None
-    turn_delay: float | None = None
 
 
 class HumanMessage(BaseModel):

@@ -27,10 +27,8 @@ def _build_settings(args: argparse.Namespace) -> Settings:
         settings.host = args.host
     if args.port is not None:
         settings.port = args.port
-    if args.provider:
-        settings.provider = args.provider
-    if args.model:
-        settings.default_model = args.model
+    if args.debug_port is not None:
+        settings.debug_port = args.debug_port
     if args.preset:
         settings.preset = Path(args.preset)
     if args.data_dir:
@@ -66,10 +64,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ccb", description="Claude Chat Base —— 智能体群聊。")
     parser.add_argument("--host", help="绑定主机（默认 127.0.0.1）")
     parser.add_argument("--port", type=int, help="绑定端口（默认 8800）")
-    parser.add_argument(
-        "--provider", choices=["auto", "anthropic", "mock"], help="LLM 提供方"
-    )
-    parser.add_argument("--model", help="智能体使用的默认模型 id")
+    parser.add_argument("--debug-port", dest="debug_port", type=int,
+                        help="调试页端口（默认关闭；设为如 8801 即在 127.0.0.1 上开调试页）")
     parser.add_argument("--preset", help="智能体/房间预设的 TOML 文件路径")
     parser.add_argument("--data-dir", help="对话记录 / 状态的存放目录")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
@@ -100,15 +96,13 @@ def main(argv: list[str] | None = None) -> None:
     banner = (
         "\n"
         "  ┌────────────────────────────────────────────────┐\n"
-        "  │  Claude Chat Base —— 智能体群聊                  │\n"
+        "  │  Claude Chat Base —— 多仓库协同群聊             │\n"
         f"  │  界面：    {url:<37}│\n"
-        f"  │  提供方：  {settings.resolved_provider():<37}│\n"
         "  └────────────────────────────────────────────────┘\n"
     )
     print(banner)
-    if not settings.anthropic_api_key:
-        print("  未检测到 ANTHROPIC API 密钥 —— 正在使用离线的 'mock' 提供方。")
-        print("  设置 CCB_ANTHROPIC_API_KEY 即可使用真实的 Claude 模型。\n")
+    if settings.debug_port and settings.debug_port > 0:
+        print(f"  调试页：  http://127.0.0.1:{settings.debug_port}/\n")
 
     if settings.open_browser:
         _open_browser_when_ready(url, health_url)

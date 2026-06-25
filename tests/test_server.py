@@ -10,8 +10,6 @@ from ccb.server import create_app
 
 def _client(tmp_path: Path) -> TestClient:
     settings = Settings(
-        provider="mock",
-        anthropic_api_key=None,
         data_dir=tmp_path / "data",
         preset=Path("does-not-exist.toml"),  # 以空状态启动，便于干净地测试
         open_browser=False,
@@ -24,7 +22,7 @@ def test_health_and_state(tmp_path):
         assert client.get("/api/health").json() == {"ok": True}
         state = client.get("/api/state").json()
         assert state["type"] == "snapshot"
-        assert state["server"]["provider"] == "mock"
+        assert state["server"]["floor_scope"] == "human"
         assert state["agents"] == []
 
 
@@ -228,3 +226,27 @@ def test_websocket_receives_snapshot_and_events(tmp_path):
             event = ws.receive_json()
             assert event["type"] == "room_added"
             assert event["room"]["name"] == "实时房间"
+
+
+def test_ai_orchestration_endpoints_removed(tmp_path):
+    # AI 自动对话已删除：编排端点应不存在（404/405）；清空(reset)仍保留（F7）。
+    with _client(tmp_path) as client:
+        room = client.post("/api/rooms", json={"name": "x"}).json()["id"]
+        for action in ("start", "pause", "stop"):
+            assert client.post(f"/api/rooms/{room}/{action}").status_code in (404, 405)
+        assert client.post(f"/api/rooms/{room}/reset").status_code == 200
+
+
+def test_snapshot_server_has_no_ai_fields(tmp_path):
+    with _client(tmp_path) as client:
+        srv = client.get("/api/state").json()["server"]
+        for gone in ("provider", "default_model", "director_model", "has_api_key"):
+            assert gone not in srv, f"snapshot.server 不该再有 {gone}"
+        assert "floor_scope" in srv and "floor_enforcement" in srv
+
+
+def test_settings_has_no_ai_fields():
+    fields = set(Settings.model_fields)
+    for gone in ("provider", "anthropic_api_key", "default_model", "director_model",
+                 "turn_delay", "max_turns", "max_tokens"):
+        assert gone not in fields, f"Settings 不该再有 AI 字段 {gone}"

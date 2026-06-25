@@ -6,15 +6,6 @@ const PALETTE = [
   "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#06b6d4",
   "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#3b82f6",
 ];
-// —— 以下为 AI 智能体相关选项；AI 自动对话已暂时停用，本项目当前专注于多 Claude Code 协作。——
-// const STRATEGY_OPTIONS = [
-//   { label: "主持人（由模型挑选发言者）", value: "director" },
-//   { label: "轮流发言", value: "round_robin" },
-// ];
-// const KIND_OPTIONS = [
-//   { label: "仓库 peer（接入真实 Claude Code）", value: "peer" },
-//   { label: "AI 智能体（API 自动发言）", value: "ai" },
-// ];
 
 createApp({
   data() {
@@ -106,22 +97,12 @@ createApp({
         /@([\p{L}\p{N}_-]+)/gu, '<span class="mention">@$1</span>',
       );
     },
-    statusText(s) { return { idle: "空闲", running: "进行中", paused: "已暂停" }[s] || s; },
     statusLabel(a) {
-      if (a.kind === "peer") {
-        return (a.role ? a.role + " · " : "") + (a.online ? "在线" : "离线（等待 Claude Code 接入）");
-      }
-      if (!a.enabled) return "已静音";
-      if (a.status === "thinking") return "思考中…";
-      if (a.status === "speaking") return "发言中…";
-      return "空闲";
+      return (a.role ? a.role + " · " : "")
+        + (a.online ? "在线" : "离线（等待 Claude Code 接入）");
     },
     statusClass(a) {
-      if (a.kind !== "peer") {
-        if (a.status === "thinking") return "text-warning";
-        if (a.status === "speaking") return "text-success";
-      }
-      return "text-secondary";
+      return a.online ? "text-success" : "text-secondary";
     },
 
     // ----- 网络 -----
@@ -172,33 +153,31 @@ createApp({
         case "agent_added":
         case "agent_updated": this.agents[ev.agent.id] = ev.agent; break;
         case "agent_removed": delete this.agents[ev.agent_id]; break;
-        case "agent_status": { const a = this.agents[ev.agent_id]; if (a) a.status = ev.status; break; }
         case "room_added":
         case "room_updated":
           this.rooms[ev.room.id] = ev.room;
           if (!this.currentRoomId) this.selectRoom(ev.room.id);
           break;
-        case "room_status": { const r = this.rooms[ev.room_id]; if (r) { r.status = ev.status; r.turn = ev.turn; } break; }
         case "room_reset": this.messages[ev.room_id] = []; break;
         case "answer_floor": this.floors[ev.room_id] = ev.floor; break;
         case "floor_config":
           this.server = { ...this.server, floor_scope: ev.scope, floor_enforcement: ev.enforcement };
           break;
         case "room_removed": {
+          const wasActive = this.currentRoomId === ev.room_id;
           delete this.rooms[ev.room_id];
           delete this.messages[ev.room_id];
           delete this.floors[ev.room_id];
-          if (this.currentRoomId === ev.room_id) {
-            this.currentRoomId = Object.keys(this.rooms)[0] || null;
-            this.replyTo = null;
-            this.closeMention();
+          if (wasActive) {
+            const next = Object.keys(this.rooms)[0] || null;
+            // 复用 selectRoom 做完整重置（replyTo/pickedMentions/stick/unread/滚动）；无主题时手动清空。
+            if (next) this.selectRoom(next);
+            else { this.currentRoomId = null; this.replyTo = null;
+              this.pickedMentions = []; this.closeMention(); }
           }
           break;
         }
-        case "message": this.addMessage(ev.message, false); break;
-        case "message_start": this.addMessage(ev.message, true); break;
-        case "message_delta": this.appendDelta(ev.message_id, ev.delta); break;
-        case "message_end": this.endMessage(ev.message); break;
+        case "message": this.addMessage(ev.message); break;
       }
     },
     applySnapshot(snap) {
@@ -217,8 +196,8 @@ createApp({
     },
 
     // ----- 消息 -----
-    addMessage(msg, streaming) {
-      const m = { ...msg, streaming: !!streaming };
+    addMessage(msg) {
+      const m = { ...msg };
       if (!this.messages[m.room_id]) this.messages[m.room_id] = [];
       const list = this.messages[m.room_id];
       list.push(m);
@@ -227,24 +206,6 @@ createApp({
       if (m.room_id === this.currentRoomId) {
         if (this.stick) this.$nextTick(() => this.scrollToBottom());
         else this.unread++;   // 用户正在上面看历史：累计未读，悬浮箭头上提示
-      }
-    },
-    appendDelta(id, delta) {
-      for (const list of Object.values(this.messages)) {
-        const m = list.find((x) => x.id === id);
-        if (m) { m.content += delta; break; }
-      }
-      if (this.stick) this.$nextTick(() => this.scrollToBottom());
-    },
-    endMessage(msg) {
-      const list = this.messages[msg.room_id];
-      if (list) {
-        const m = list.find((x) => x.id === msg.id);
-        if (m) { Object.assign(m, msg); m.streaming = false; }
-      }
-      // 流式收尾时高度可能变化；若仍贴底则补一次精确滚动（取代已移除的全局 updated 钩子）。
-      if (msg.room_id === this.currentRoomId && this.stick) {
-        this.$nextTick(() => this.scrollToBottom());
       }
     },
     onScroll() {
@@ -484,7 +445,7 @@ createApp({
       ], (v) => this.api("PATCH", `/api/rooms/${room.id}`, { name: v.name, topic: v.topic }));
     },
     newAgent() {
-      // 当前只新增「仓库 peer」槽位（AI 智能体已停用）。
+      // 每个参与者都是一个外部 Claude Code 实例（仓库 peer 槽位）。
       this.openModal("新增参与者", [
         { key: "name", label: "名称", value: "" },
         { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: "" },
@@ -500,7 +461,6 @@ createApp({
       });
     },
     editAgent(a) {
-      // AI 自动对话停用：不再编辑 温度（仅 AI 智能体相关）。
       this.openModal("编辑参与者", [
         { key: "name", label: "名称", value: a.name },
         { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: a.role || "" },

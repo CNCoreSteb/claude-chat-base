@@ -14,7 +14,7 @@ import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -29,7 +29,6 @@ from .models import (
     RoomCreate,
     RoomUpdate,
 )
-from .orchestrator import Orchestrator
 
 log = logging.getLogger("ccb.server")
 
@@ -74,9 +73,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         _install_proactor_noise_filter()
         hub = Hub(settings)
-        hub.orchestrator = Orchestrator(hub)
         hub.bootstrap()
         app.state.hub = hub
+        app.state.started_at = time.time()
 
         async def _reconcile_loop() -> None:
             # 周期性地把长时间无活动的 peer 标记为离线。单拍异常不能让整条循环退出，
@@ -86,24 +85,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     await hub.reconcile_peers()
                     await hub.reconcile_floors()
+                    hub.last_reconcile_at = time.time()
+                    hub.reconcile_count += 1
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - 记录后继续，保证离线判定不中断
+                except Exception as exc:  # noqa: BLE001 - 记录后继续，保证离线判定不中断
+                    hub.last_reconcile_error = repr(exc)
                     log.exception("reconcile 失败，将在下一拍重试")
 
         reconcile_task = asyncio.create_task(_reconcile_loop())
-        log.info(
-            "Claude Chat Base 就绪 —— provider=%s model=%s",
-            settings.resolved_provider(),
-            settings.default_model,
-        )
+
+        # 可选：独立端口的调试页（CCB_DEBUG_PORT>0 时）。作为本 lifespan 的子任务启动，与主服务
+        # 共享同一个活的 Hub；强制绑 127.0.0.1（无鉴权、含内部状态，不外露）；no-op 信号让主服务
+        # 独占 Ctrl+C；关停时随主应用收尾。
+        debug_server = None
+        debug_task = None
+        if settings.debug_port and settings.debug_port > 0:
+            import uvicorn
+
+            from .debug_app import create_debug_app
+            dbg_app = create_debug_app(hub)
+            dbg_cfg = uvicorn.Config(
+                dbg_app, host="127.0.0.1", port=settings.debug_port,
+                log_level="warning", timeout_graceful_shutdown=3,
+            )
+            debug_server = uvicorn.Server(dbg_cfg)
+            debug_server.install_signal_handlers = lambda: None  # 主服务独占信号
+            dbg_app.state.uvicorn_server = debug_server
+            dbg_app.state.main_app = app
+            debug_task = asyncio.create_task(debug_server.serve())
+            log.info("CCB 调试页：http://127.0.0.1:%d/", settings.debug_port)
+
+        log.info("Claude Chat Base 就绪")
         try:
             yield
         finally:
             reconcile_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reconcile_task
-            await hub.orchestrator.shutdown()
+            if debug_server is not None:
+                debug_server.should_exit = True
+                with suppress(Exception):
+                    await asyncio.wait_for(debug_task, timeout=5)
             hub.store.close()
 
     app = FastAPI(title="Claude Chat Base", version="0.1.0", lifespan=lifespan)
@@ -194,26 +217,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ----- 房间控制 ------------------------------------------------------
 
-    @app.post("/api/rooms/{room_id}/start")
-    async def start_room(room_id: str) -> dict:
-        if not hub().store.get_room(room_id):
-            raise HTTPException(404, "房间不存在")
-        await hub().orchestrator.start(room_id)
-        return {"ok": True}
-
-    @app.post("/api/rooms/{room_id}/pause")
-    async def pause_room(room_id: str) -> dict:
-        await hub().orchestrator.pause(room_id)
-        return {"ok": True}
-
-    @app.post("/api/rooms/{room_id}/stop")
-    async def stop_room(room_id: str) -> dict:
-        await hub().orchestrator.stop(room_id)
-        return {"ok": True}
-
     @app.post("/api/rooms/{room_id}/reset")
     async def reset_room(room_id: str) -> dict:
-        await hub().orchestrator.stop(room_id)
+        if not hub().store.get_room(room_id):
+            raise HTTPException(404, "房间不存在")
         await hub().reset_room(room_id)
         return {"ok": True}
 
@@ -261,13 +268,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 color="#94a3b8",
                 content=content,
             )
-            _apply_mentions(hub(), room_id, content)
 
-        # 点名：把「正文 @ 文本解析出的成员」与「调用方用 agent_id（或名字/职责）显式指定的
-        # 接收者」合并，并用 meta.to 明确标出**主要发给谁**——让"这条主要发给谁"不再只靠脆弱的
-        # 文本匹配（重名/措辞/大小写都可能歧义），而是按 id 规范化。随消息持久化、零 schema 迁移。
-        text_ids = _resolve_mentions(hub(), room_id, content)
+        # 被引用回复的原消息（既用于渲染引用块，也用于「回复某 agent = 定向发给它」的推断）。
+        original = hub().store.get_message(reply_to) if reply_to else None
+        if original and original.room_id != room_id:
+            original = None
+
+        # 接收者优先级：显式 to（agent_id/名字/职责）> 回复对象（被引用消息的发送者，若是本房间
+        # 的 agent）。显式/回复指定时以它为准——不再并入正文 @ 文本的模糊匹配（否则名字/职责与
+        # @词撞车的其它实例会被误打"被点名"一起回答，如 @server 误命中 role=server 的另一实例）。
+        # 两者都没有时才回退到正文 @ 文本解析。meta.to 标出主要发给谁（按 id 规范、随消息持久化）。
         to_id = _resolve_member(hub(), room_id, body.get("to"))
+        if not to_id and original:
+            to_id = _resolve_member(hub(), room_id, original.sender_id)  # 回复某 agent -> 定向给它
         explicit_ids: list[str] = []
         raw_mentions = body.get("mentions")
         if isinstance(raw_mentions, list):
@@ -275,21 +288,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 rid = _resolve_member(hub(), room_id, tok)
                 if rid and rid not in explicit_ids:
                     explicit_ids.append(rid)
-        # 顺序：主要接收者优先，其次显式 mentions，再文本解析；去重。
+        if to_id or explicit_ids:  # 显式/回复指定 -> 以它为准
+            source = ([to_id] if to_id else []) + explicit_ids
+        else:                      # 无任何指定 -> 回退正文 @ 文本解析
+            source = _resolve_mentions(hub(), room_id, content)
         ordered: list[str] = []
-        for rid in ([to_id] if to_id else []) + explicit_ids + text_ids:
+        for rid in source:
             if rid and rid not in ordered:
                 ordered.append(rid)
         if ordered:
             msg.meta["mentions"] = ordered
         if to_id:
             msg.meta["to"] = to_id  # 主要接收者（按 id 规范，不依赖文本）
-        if reply_to:
-            original = hub().store.get_message(reply_to)
-            if original and original.room_id == room_id:
-                msg.meta["reply_to"] = original.id
-                msg.meta["reply_to_sender"] = original.sender_name
-                msg.meta["reply_to_preview"] = _reply_preview(original.content)
+            to_agent = hub().store.get_agent(to_id)
+            if to_agent:
+                msg.meta["to_name"] = to_agent.name  # 给桥接/GUI 直接显示「主要发给谁」
+        if original:
+            msg.meta["reply_to"] = original.id
+            msg.meta["reply_to_sender"] = original.sender_name
+            msg.meta["reply_to_preview"] = _reply_preview(original.content)
         # 待命实例用 ask 发问时标记，GUI 据此高亮"等你回答"。
         if body.get("is_question"):
             msg.meta["is_question"] = True
@@ -337,7 +354,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def register_peer(body: dict) -> dict:
         """让一个外部 Claude Code 实例以 peer 身份加入房间。
 
-        若已存在同名的 peer 实例（**全局**，不限于本房间——例如它先调过 connect 全局上线，
+        若已存在同名的 peer 实例（全局，不限于本房间——例如它先调过 connect 全局上线，
         或已在别的主题里），就认领它并确保它在本房间，避免产生重复；否则新建一个 peer。
         """
         room_id = body.get("room_id")
@@ -600,25 +617,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await websocket.accept()
         h = hub()
         queue = h.subscribe()
-        try:
+
+        async def _pump() -> None:
             await websocket.send_json(h.snapshot())
             while not should_exit():
                 # 用超时轮询代替无限 await，使本任务能感知关闭并主动退出。
-                # （queue.get() 仅在尚无消息时被取消，已取出的消息不会丢失。）
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=1.0)
                 except TimeoutError:
                     continue
-                # None 是「该订阅者因积压被丢弃」的关闭哨兵：主动跳出，关闭本连接，
-                # 让浏览器走重连并重新拉取快照，而不是静默停在过期状态。
+                # None 是「该订阅者因积压被丢弃」的关闭哨兵：跳出关闭本连接，让浏览器重连重拉快照。
                 if event is None:
-                    break
+                    return
                 await websocket.send_json(event)
-        except WebSocketDisconnect:
-            pass
-        except Exception:  # noqa: BLE001
-            pass
+
+        async def _watch() -> None:
+            # 读侧探测断开：标签页悄悄断开（睡眠/断网）时及时收尾，不必等下一个广播事件
+            # 才发现——否则安静房间里死连接会一直占着订阅。
+            try:
+                while True:
+                    await websocket.receive()
+            except Exception:  # noqa: BLE001
+                pass
+
+        pump = asyncio.create_task(_pump())
+        watch = asyncio.create_task(_watch())
+        try:
+            await asyncio.wait({pump, watch}, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            for t in (pump, watch):
+                t.cancel()
+            await asyncio.gather(pump, watch, return_exceptions=True)
             h.unsubscribe(queue)
 
     # ----- 静态 GUI（最后挂载，保证 API 路由优先匹配） ------------------------
@@ -638,7 +667,7 @@ def _kicked_payload() -> list[dict]:
             "sender_id": "system",
             "sender_name": "CCB",
             "role": "system",
-            "content": "⛔ 你已被踢出 CCB（kicked）。请调用 disconnect 结束待命，不要再 wait；"
+            "content": "你已被踢出 CCB（kicked）。请调用 disconnect 结束待命，不要再 wait；"
             "如需归队请重新 standby。",
             "ts": time.time(),
             "color": None,
@@ -681,7 +710,7 @@ def _mentioned_tokens(content: str) -> set[str]:
 
 
 def _resolve_member(hub: Hub, room_id: str, token: object) -> str | None:
-    """把 token（agent_id/名字/职责）解析成**本房间内**某成员的 agent_id，解析不到返回 None。
+    """把 token（agent_id/名字/职责）解析成本房间内某成员的 agent_id，解析不到返回 None。
 
     用于消息的显式接收者约束（``to`` / ``mentions``）：GUI 传 agent_id，agent 也可传名字/职责；
     只在房间成员范围内匹配——只能指定在场的人，与文本 @ 的解析口径一致。
@@ -722,17 +751,3 @@ def _reply_preview(text: str, limit: int = 80) -> str:
     """把被引用消息压成单行短摘要，便于在引用块里展示。"""
     s = " ".join(text.split())
     return s if len(s) <= limit else s[:limit] + "…"
-
-
-def _apply_mentions(hub: Hub, room_id: str, content: str) -> None:
-    tokens = _mentioned_tokens(content)
-    if not tokens:
-        return
-    room = hub.store.get_room(room_id)
-    if not room:
-        return
-    for aid in room.agent_ids:
-        agent = hub.store.get_agent(aid)
-        if agent and agent.name.lower() in tokens and agent.kind == AgentKind.AI:
-            hub.orchestrator.hint_next(room_id, agent.id)
-            return

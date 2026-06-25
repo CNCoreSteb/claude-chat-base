@@ -130,6 +130,13 @@ body { overflow: hidden; }
 
 .composer textarea { resize: none; max-height: 140px; }
 
+/* 应答位横幅：本轮有人在答/待答时浮在对话顶部，让人看见应答编排。 */
+.floor-bar {
+  background: var(--bs-warning-bg-subtle);
+  border-bottom: 1px solid var(--bs-warning-border-subtle);
+  color: var(--bs-body-color);
+}
+
 /* 「回到最新消息」悬浮箭头：浮在对话区右下角；滚上去看历史时出现，带期间新消息计数。 */
 .jump-latest {
   position: absolute;

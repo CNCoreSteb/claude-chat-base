@@ -106,7 +106,9 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     @mcp.tool()
     async def standby(name: str = "", role: str = "", room: str = "大厅") -> str:
         """进入 CCB 待命状态：以本仓库身份自注册并加入主题，然后**持续轮询**消息、被点名或有相关
-        变更时回应。当用户说"进入 ccb 待命状态 / ccb 待命 / 进入待命 / standby"时调用本工具。
+        变更时回应。当用户说"进入 ccb / 进ccb / 接入 ccb / 连接 ccb 协同 / ccb 待命 / 进入待命 /
+        standby"等任意"接入 CCB 一起协同"的意思时，**优先调用本工具**——而不是只用 connect/
+        join_room 连一下就停下来问用户（那样不会进入持续待命）。
 
         `name` 缺省取当前目录名；`role` 是职责（如 后端/web端）；`room` 缺省"大厅"。"""
         nm = name or os.path.basename(os.getcwd()) or "Peer"
@@ -141,12 +143,19 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             "待命期间你的「用户」就是 CCB 群里（GUI 旁）的人。需要用户拍板/澄清时，调用\n"
             "ask（把问题作为入参）：它把问题发到群里（GUI 中高亮为「等你回答」）并就地等用户\n"
             "回复后返回，其间你始终在线。**不要**用 AskUserQuestion，也**不要**结束本回合去问\n"
-            "你终端的本地用户——那等于擅自退出待命。需要别的仓库参与时，先 @ 点名或 invite 拉进来再 ask。\n\n"
+            "你终端的本地用户——那等于擅自退出待命。"
+            "需要别的仓库参与时，先 @ 点名或 invite 拉进来再 ask。\n\n"
+            "【面向所有人的问题 —— 先抢应答位，别一拥而上】\n"
+            "收到面向**所有人**（非专门点你）的问题时，先调用 claim_answer：抢到才回答、答完\n"
+            "release_answer 放行下一位；没抢到说明已有人在答——**先别答**，wait 观望并读它的答复，\n"
+            "确有必要补充/纠正才排队、轮到你时发**定向修正**（reply_to 那条答复）"
+            "再 release_answer，否则别重复回答。wait 输出里会提示「谁正在回答」。\n\n"
             "【离开主题 ≠ 下线】\n"
             "让你「离开本大厅 / 退出某主题 / 你可以走了」时：用 leave_room(\"主题名\") 退出**那个\n"
             "主题**即可——你仍在线、仍在待命，可被 invite 随时拉回；即便已不在任何主题，也**继续\n"
             "wait_for_messages** 保持在线（被邀请时会自动回到对话）。**不要**因此 disconnect。\n"
-            "只有用户明确说「退出待命 / 下线 / 停止 / stop」要你整体下线时，才用 disconnect 停止循环。\n"
+            "只有用户明确说「退出待命 / 下线 / 停止 / stop」要你整体下线时，"
+            "才用 disconnect 停止循环。\n"
             "（用户随时可按 Esc 打断你插话。）"
         )
 
@@ -154,7 +163,9 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
     async def connect(name: str, role: str = "", repo_path: str = "") -> str:
         """全局上线（声明你代表的仓库）。`name` 是显示名，`role` 是职责（如 后端/web端），
         `repo_path` 是本仓库本地路径。上线后即可被别的实例发现与拉群；之后可用
-        join_room / create_topic 进入主题。"""
+        join_room / create_topic 进入主题。
+        注意：connect 只是"上线"、**不会**持续待命；若用户要你"进入 ccb / 持续协同 / 待命"，
+        应改用 **standby**（自带轮询循环指令）。"""
         async with _client() as c:
             resp = await c.post(
                 "/api/instances/connect",
@@ -164,7 +175,11 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             data = resp.json()
         _session.update(agent_id=data["agent_id"], name=name, role=role, kicked=False)
         how = "认领了已有身份" if data.get("claimed") else "新建了身份"
-        return f"已上线：{name}（{role or '未注明职责'}），{how}。"
+        return (
+            f"已上线：{name}（{role or '未注明职责'}），{how}。\n"
+            "若用户要你『进入 ccb / 持续协同 / 待命』：现在起请**反复调用 wait_for_messages** "
+            "跟进，**不要**结束本回合去问用户下一步（那等于没真正进待命）。"
+        )
 
     @mcp.tool()
     async def join_room(room: str, name: str = "", role: str = "", repo_path: str = "") -> str:
@@ -188,7 +203,8 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         how = "认领了已配置的槽位" if data.get("claimed") else "加入"
         return (
             f"已以「{nm}」{how}主题「{match['name']}」。当前主题已切到这里。\n"
-            "用 wait_for_messages 跟进；用 invite 按职责把需要的仓库拉进来。"
+            "**现在起进入待命循环：反复调用 wait_for_messages 跟进**——返回后处理与你相关的消息，"
+            "然后立刻再次调用，**不要**结束本回合去等用户；用 invite 按职责把需要的仓库拉进来。"
         )
 
     @mcp.tool()
@@ -324,8 +340,69 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                     "to": to,
                 },
             )
+            # 应答编排(hard)：本轮已有人在答、你不是 holder 时会被 409 挡下——提示先抢应答位。
+            if resp.status_code == 409:
+                return resp.json().get("detail") or (
+                    "已有实例在回答本轮问题；请先 claim_answer 取得应答位或排队，轮到你再回答。"
+                )
             resp.raise_for_status()
         return f"已发送到「{match['name']}」。"
+
+    @mcp.tool()
+    async def claim_answer(topic: str = "") -> str:
+        """回答**面向所有人的问题**前先抢「应答位」，避免和别的实例一拥而上重复回答（缺省=当前主题）。
+        抢到→你来答、答完调用 release_answer 放行下一位；没抢到→你已排队，**先别答**：用
+        wait_for_messages 观望，读当前回答者的答复，确有必要补充/纠正时轮到你再发**定向修正**
+        （reply_to 那条答复）再 release_answer。可反复调用本工具复查是否轮到你。"""
+        if not _session["agent_id"]:
+            return "请先 connect / join_room。"
+        aid = _session["agent_id"]
+        async with _client() as c:
+            room_ref = topic or _session.get("active_room")
+            if not room_ref:
+                return "没有当前主题，请用 topic 指定。"
+            match = await _resolve_room(c, room_ref)
+            if not match:
+                return f"未找到主题「{room_ref}」。"
+            resp = await c.post(
+                f"/api/rooms/{match['id']}/answer/claim", json={"agent_id": aid}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        floor = data.get("floor", {})
+        if data.get("granted"):
+            return (f"✅ 已取得「{match['name']}」的应答位——你来回答。"
+                    "答完**务必** release_answer 放行下一位。")
+        queue = floor.get("queue") or []
+        pos = queue.index(aid) + 1 if aid in queue else len(queue)
+        holder = floor.get("holder_name") or "其他实例"
+        return (
+            f"⏳ {holder} 正在回答，你排在第 {pos} 位。**先别答**——wait 观望、读它的答复；确有必要"
+            "补充/纠正时，轮到你（再次 claim_answer 显示 ✅）再发**定向修正**（reply_to 那条）再 "
+            "release_answer；若无需补充，调用 release_answer 退出队列即可。"
+        )
+
+    @mcp.tool()
+    async def release_answer(topic: str = "") -> str:
+        """放行应答位（缺省=当前主题）：你是 holder→自动让队首顶上；你在排队→退出队列。
+        答完、或决定不补充时调用。"""
+        if not _session["agent_id"]:
+            return "请先 connect / join_room。"
+        async with _client() as c:
+            room_ref = topic or _session.get("active_room")
+            if not room_ref:
+                return "没有当前主题，请用 topic 指定。"
+            match = await _resolve_room(c, room_ref)
+            if not match:
+                return f"未找到主题「{room_ref}」。"
+            resp = await c.post(
+                f"/api/rooms/{match['id']}/answer/release", json={"agent_id": _session["agent_id"]}
+            )
+            resp.raise_for_status()
+            floor = resp.json().get("floor", {})
+        nxt = floor.get("holder_name")
+        tail = f"（下一位：{nxt}）" if nxt else "（已空闲）"
+        return f"已放行「{match['name']}」的应答位。{tail}"
 
     @mcp.tool()
     async def ask(question: str, topic: str = "", timeout: float = 600.0) -> str:
@@ -445,6 +522,28 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             lines.append(f"{m['sender_name']}{who} «{m['id']}»: {content}")
         return f"「{match['name']}」最近 {len(msgs)} 条历史：\n" + "\n".join(lines)
 
+    async def _floor_hint(aid: str) -> str:
+        """当前主题若有进行中的应答轮，给一句提示（best-effort，失败则静默不打扰）。"""
+        rid = _session.get("active_room")
+        if not rid:
+            return ""
+        try:
+            async with _client(8) as c:
+                fl = (await c.get(f"/api/rooms/{rid}/answer")).json()
+        except Exception:  # noqa: BLE001
+            return ""
+        if not fl.get("active"):
+            return ""
+        holder = fl.get("holder")
+        if holder == aid:
+            return "— 应答位：**你正持有**本主题应答位；回答完请调用 release_answer 放行下一位。"
+        if holder:
+            return (
+                f"— 应答位：**{fl.get('holder_name')} 正在回答**本轮问题。"
+                "要补充/纠正就 claim_answer 排队、等它答完轮到你再发定向修正；否则**别重复回答**。"
+            )
+        return "— 应答位：本轮问题**待应答**。你若要回答，请先 claim_answer 取得应答位再答。"
+
     async def _fetch_new(wait: bool, timeout: float = 25.0) -> str:
         if _session.get("kicked"):
             return (
@@ -528,6 +627,9 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                 "『收到，正在处理』，并带上 reply_to=被点名那条消息的 «id»"
                 "（让对方在一堆回执里认出你在回应哪条），随后再着手处理。"
             )
+        floor_hint = await _floor_hint(aid)
+        if floor_hint:
+            out += "\n\n" + floor_hint
         if wait:
             out += (
                 "\n\n— 待命提醒：处理完请**立刻再次** wait_for_messages 保持在线；"

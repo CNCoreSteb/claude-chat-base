@@ -123,7 +123,9 @@ def cmd_connect(args) -> None:
                  last_ts=state.get("last_ts", 0.0), kicked=False)
     save_state(state)
     how = "认领了已有身份" if res.get("claimed") else "新建了身份"
-    print(f"已上线：{name}（{args.role or '未注明职责'}），{how}。")
+    print(f"已上线：{name}（{args.role or '未注明职责'}），{how}。\n"
+          "若用户要你『进入 ccb / 持续协同 / 待命』：现在起请反复执行 `wait` 跟进，"
+          "不要结束本回合去问用户下一步（那等于没真正进待命）。")
 
 
 def cmd_join(args) -> None:
@@ -148,7 +150,9 @@ def cmd_join(args) -> None:
                  last_ts=state.get("last_ts", 0.0), kicked=False)
     save_state(state)
     how = "认领了已配置的槽位" if res.get("claimed") else "加入"
-    print(f"已以「{name}」{how}主题「{room['name']}」，并设为当前主题。")
+    print(f"已以「{name}」{how}主题「{room['name']}」，并设为当前主题。\n"
+          "现在起进入待命循环：反复执行 `wait` 跟进——返回后处理与你相关的消息再立刻再次 `wait`，"
+          "不要结束本回合去等用户。")
 
 
 def cmd_standby(args) -> None:
@@ -283,9 +287,78 @@ def cmd_send(args) -> None:
     room = resolve_room(state, ref)
     if not room:
         die(f"未找到主题「{ref}」。")
-    request("POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
-            {"content": args.text, "agent_id": aid, "reply_to": args.reply_to, "to": args.to})
+    # 用 request_status 软处理 409：应答编排(hard)挡下时给提示，而非崩掉。
+    status, body = request_status(
+        "POST", base_url(state) + f"/api/rooms/{room['id']}/messages",
+        {"content": args.text, "agent_id": aid, "reply_to": args.reply_to, "to": args.to})
+    if status == 409:
+        detail = body.get("detail") if isinstance(body, dict) else body
+        print(detail or "已有实例在回答本轮问题；请先 `claim` 取得应答位或排队，轮到你再答。")
+        return
+    if status >= 400:
+        die(f"请求失败 {status}：{body or ''}")
     print(f"已发送到「{room['name']}」。")
+
+
+def cmd_claim(args) -> None:
+    """回答面向所有人的问题前先抢应答位（缺省=当前主题），避免一拥而上重复回答。"""
+    state = load_state()
+    aid = require_agent(state)
+    ref = args.topic or state.get("active_room")
+    if not ref:
+        die("没有当前主题。请用 --topic 指定。")
+    room = resolve_room(state, ref)
+    if not room:
+        die(f"未找到主题「{ref}」。")
+    data = request("POST", base_url(state) + f"/api/rooms/{room['id']}/answer/claim",
+                   {"agent_id": aid})
+    floor = data.get("floor", {})
+    if data.get("granted"):
+        print(f"✅ 已取得「{room['name']}」的应答位——你来回答。答完务必 `release` 放行下一位。")
+        return
+    queue = floor.get("queue") or []
+    pos = queue.index(aid) + 1 if aid in queue else len(queue)
+    holder = floor.get("holder_name") or "其他实例"
+    print(f"⏳ {holder} 正在回答，你排第 {pos} 位。先别答——`wait` 观望、读它的答复；确有必要补充才"
+          "排队，轮到你（再 `claim` 显示 ✅）发定向回复（`send --reply-to`）再 `release`；无需补充就 `release`。")
+
+
+def cmd_release(args) -> None:
+    """放行应答位（缺省=当前主题）：你是 holder→让队首顶上；在排队→退出队列。"""
+    state = load_state()
+    aid = require_agent(state)
+    ref = args.topic or state.get("active_room")
+    if not ref:
+        die("没有当前主题。请用 --topic 指定。")
+    room = resolve_room(state, ref)
+    if not room:
+        die(f"未找到主题「{ref}」。")
+    data = request("POST", base_url(state) + f"/api/rooms/{room['id']}/answer/release",
+                   {"agent_id": aid})
+    nxt = (data.get("floor") or {}).get("holder_name")
+    print(f"已放行「{room['name']}」的应答位。" + (f"（下一位：{nxt}）" if nxt else "（已空闲）"))
+
+
+def _floor_hint(state: dict) -> None:
+    """当前主题若有进行中的应答轮，打印一句提示（best-effort）。"""
+    rid = state.get("active_room")
+    if not rid:
+        return
+    try:
+        _, fl = request_status("GET", base_url(state) + f"/api/rooms/{rid}/answer", timeout=8)
+    except SystemExit:
+        return
+    if not isinstance(fl, dict) or not fl.get("active"):
+        return
+    me = state.get("agent_id")
+    holder = fl.get("holder")
+    if holder == me:
+        print("— 应答位：你正持有本主题应答位；回答完请 `release` 放行下一位。")
+    elif holder:
+        print(f"— 应答位：{fl.get('holder_name')} 正在回答本轮问题。要补充就 `claim` 排队、"
+              "等它答完轮到你再发定向回复；否则别重复回答。")
+    else:
+        print("— 应答位：本轮问题待应答。你若要回答，先 `claim` 取得应答位再答。")
 
 
 def cmd_ask(args) -> None:
@@ -436,6 +509,9 @@ def cmd_wait(args) -> None:
            f"?since={since}&timeout={args.timeout}")
     msgs = request("GET", url, timeout=args.timeout + 10)
     _print_messages(state, msgs, is_wait=True)
+    # _print_messages 可能从 kicked 哨兵里置位 kicked；非 kicked 时再附应答位提示。
+    if not load_state().get("kicked"):
+        _floor_hint(state)
 
 
 def cmd_history(args) -> None:
@@ -568,6 +644,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--to", default="",
                    help="明确指定这条主要发给谁（对方的职责/名字/agent_id），对方会看到 ‹主要找你›")
     c.set_defaults(func=cmd_send)
+
+    c = sub.add_parser("claim", help="抢应答位（回答面向所有人的问题前先抢，避免一拥而上重复回答）")
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_claim)
+
+    c = sub.add_parser("release", help="放行应答位（答完、或决定不补充时）")
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_release)
 
     c = sub.add_parser("ask", help="在群里向用户提问并就地等其回复（待命期间征求用户意见用它，别退出循环）")
     c.add_argument("--text", required=True); c.add_argument("--topic", default="")

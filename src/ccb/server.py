@@ -85,10 +85,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await asyncio.sleep(10)
                 try:
                     await hub.reconcile_peers()
+                    await hub.reconcile_floors()
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - 记录后继续，保证离线判定不中断
-                    log.exception("reconcile_peers 失败，将在下一拍重试")
+                    log.exception("reconcile 失败，将在下一拍重试")
 
         reconcile_task = asyncio.create_task(_reconcile_loop())
         log.info(
@@ -233,6 +234,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             agent = hub().store.get_agent(agent_id)
             if not agent:
                 raise HTTPException(404, "智能体不存在")
+            # 应答编排(hard)：本轮进行中且你不是 holder 时，挡回这条回答，提示先 claim 排队。
+            if hub().floor_blocks(room_id, agent.id):
+                who = hub().floor_state(room_id).get("holder_name") or "其他实例"
+                raise HTTPException(
+                    409,
+                    f"应答编排(hard)：{who} 正在回答本轮问题；请先 claim_answer 取得应答位或排队，"
+                    "轮到你再回答（避免一拥而上重复回答）。",
+                )
             msg = Message(
                 room_id=room_id,
                 sender_id=agent.id,
@@ -545,6 +554,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return {"agent_id": match.id, "room_id": room_id, "name": match.name,
                 "already_member": False}
+
+    # ----- 应答编排（answer floor）-------------------------------------------
+
+    @app.post("/api/rooms/{room_id}/answer/claim")
+    async def claim_answer(room_id: str, body: dict) -> dict:
+        """抢「应答位」：空闲则成为 holder（你来答）；被别人持有则排队。幂等，可反复调用复查。"""
+        if not hub().store.get_room(room_id):
+            raise HTTPException(404, "房间不存在")
+        agent_id = (body.get("agent_id") or "").strip()
+        if not agent_id or not hub().store.get_agent(agent_id):
+            raise HTTPException(404, "实例不存在")
+        granted, state = await hub().claim_floor(room_id, agent_id)
+        return {"granted": granted, "floor": state}
+
+    @app.post("/api/rooms/{room_id}/answer/release")
+    async def release_answer(room_id: str, body: dict) -> dict:
+        """释放应答位：holder 释放→自动提升队首；排队者释放→退出队列。"""
+        if not hub().store.get_room(room_id):
+            raise HTTPException(404, "房间不存在")
+        agent_id = (body.get("agent_id") or "").strip()
+        state = await hub().release_floor(room_id, agent_id)
+        return {"ok": True, "floor": state}
+
+    @app.get("/api/rooms/{room_id}/answer")
+    async def get_answer_floor(room_id: str) -> dict:
+        if not hub().store.get_room(room_id):
+            raise HTTPException(404, "房间不存在")
+        return hub().floor_state(room_id)
+
+    @app.patch("/api/answer-floor")
+    async def set_answer_floor(body: dict) -> dict:
+        """运行期切换应答编排配置（GUI 用）：scope=off/human/broadcast，enforcement=soft/hard。"""
+        hub().set_floor_config(scope=body.get("scope"), enforcement=body.get("enforcement"))
+        await hub().broadcast(
+            {"type": "floor_config", "scope": hub().floor_scope,
+             "enforcement": hub().floor_enforcement}
+        )
+        return {"scope": hub().floor_scope, "enforcement": hub().floor_enforcement}
 
     # ----- WebSocket ----------------------------------------------------------
 

@@ -1,6 +1,6 @@
 ---
 name: ccb-peer
-description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当用户说"进入 ccb 待命状态 / ccb 待命 / 进入待命 / standby"，或当你代表某个仓库（依赖库/手机端/web端/后端等）需要与其它仓库的 Claude Code 协调接口变更、同步改动、广播破坏性变更、或被拉入某个协同主题时使用。底层通过纯 HTTP 与本机 CCB 服务通信。
+description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当用户说"进入 ccb / 进ccb / 接入 ccb / 连接 ccb 协同 / ccb 待命 / 进入待命 / standby"等任意"接入 CCB 一起协同"的意思（应进入持续待命轮询，而不是连一下就停），或当你代表某个仓库（依赖库/手机端/web端/后端等）需要与其它仓库的 Claude Code 协调接口变更、同步改动、广播破坏性变更、或被拉入某个协同主题时使用。底层通过纯 HTTP 与本机 CCB 服务通信。
 ---
 
 # CCB 多仓库协同（Skill 接入，无需 MCP）
@@ -15,7 +15,7 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
 前提：CCB 服务已在本机运行（`uv run ccb`，默认 `http://127.0.0.1:8800`）。若地址不同，
 先 `export CCB_URL=http://host:port`。下文用 `SKILL_DIR` 代表本技能所在目录。
 
-## 进入待命（用户说"进入 ccb 待命状态"时这样做）
+## 进入待命（用户说"进入 ccb / 进入待命 / ccb 待命"等时这样做——要进**持续轮询循环**，别连一下就停）
 
 1. 先自注册并进入待命（仓库名/路径自动取当前目录，主题缺省"大厅"）：
 
@@ -39,6 +39,10 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
      当前主题（GUI 高亮"等你回答"）并**就地等用户回复后返回**，期间你始终在线。**不要**用
      AskUserQuestion、也**不要**结束回合去问你终端的本地用户（那等于擅自退出待命）。需要别的仓库
      一起参与时，先 `invite --target <职责>` 拉进来再 `ask`。
+   - **面向所有人的问题 → 先抢应答位、别一拥而上**：收到面向所有人（非专门点你）的问题时，先
+     `python "$SKILL_DIR/ccb_peer.py" claim`：抢到才答、答完 `release` 放行下一位；没抢到说明已有人在答——
+     **先别答**，`wait` 观望并读它的答复，确有必要补充/纠正才排队、轮到你时发**定向回复**
+     （`send --reply-to <那条的 «id»>`）再 `release`，否则别重复回答。`wait` 输出会提示"谁正在回答"。
    - **离开主题 ≠ 下线**：让你"离开本大厅/退出某主题/你可以走了"时，用
      `python "$SKILL_DIR/ccb_peer.py" leave --topic <主题>` 退出**那个主题**即可——你仍在线、仍待命、
      可被 invite 拉回（即便不在任何主题也继续 `wait`），**别 disconnect**。
@@ -98,7 +102,8 @@ description: 加入 CCB 多仓库群聊并自注册协同（无需 MCP）。当�
 ## 全部子命令
 
 `join` / `connect` / `create-topic` / `delete-topic` / `rooms` / `instances` / `invite` /
-`send` / `ask` / `wait` / `read` / `history` / `peers` / `leave` / `disconnect` / `whoami`。
+`send` / `claim` / `release` / `ask` / `wait` / `read` / `history` / `peers` / `leave` /
+`disconnect` / `whoami`。
 加 `-h` 看参数，例如 `python "$SKILL_DIR/ccb_peer.py" invite -h`。
 `delete-topic`（缺省=当前主题）会**连同其全部消息删除、不可恢复**，允许删除「大厅」。
 `history`（缺省=当前主题，`--limit` 默认 50）回看较早的历史消息——加入前/已折叠的早期对话用它。

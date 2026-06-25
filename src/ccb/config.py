@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     preset: Path = DEFAULT_PRESET
     open_browser: bool = True
 
+    # 应答编排（answer floor）：避免广播问题被多个 peer 一拥而上重复回答。运行期可在 GUI 切换。
+    # scope:        off=关闭 / human=仅人类(GUI 用户)提问触发 / broadcast=所有广播问题触发
+    # enforcement:  soft=只记录并告知，agent 自觉让行 / hard=本轮内服务端拒绝非 holder 的回答
+    floor_scope: str = "human"
+    floor_enforcement: str = "soft"
+
     def resolved_provider(self) -> str:
         """返回默认实际使用的提供方名称。"""
         if self.provider != "auto":

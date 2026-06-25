@@ -91,6 +91,23 @@
       <div class="server-card small text-secondary mt-auto m-3 p-3 border rounded">
         <div>多 Claude Code 协作 · 本地运行</div>
         <div>数据持久化于 <span class="font-monospace">.ccb/ccb.db</span></div>
+        <!-- 应答编排：避免广播问题被多个实例一拥而上重复回答 -->
+        <div class="d-flex align-items-center gap-2 mt-2 flex-wrap">
+          <span title="避免广播问题被多个实例一拥而上重复回答">应答编排</span>
+          <select class="form-select form-select-sm w-auto py-0" aria-label="应答编排范围"
+                  :value="server.floor_scope" @change="setFloorConfig({ scope: $event.target.value })">
+            <option value="off">关闭</option>
+            <option value="human">仅我的提问</option>
+            <option value="broadcast">所有广播问题</option>
+          </select>
+          <select v-if="server.floor_scope && server.floor_scope !== 'off'"
+                  class="form-select form-select-sm w-auto py-0" aria-label="应答编排强度"
+                  :value="server.floor_enforcement"
+                  @change="setFloorConfig({ enforcement: $event.target.value })">
+            <option value="soft">软·提示</option>
+            <option value="hard">硬·拦截</option>
+          </select>
+        </div>
         <!-- AI 自动对话停用：隐藏 提供方/模型/API Key 提示
         <div>提供方 <span class="badge">{{ server.provider }}</span></div>
         <div>模型：{{ server.default_model }}</div>
@@ -117,6 +134,14 @@
           <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
         </div>
       </header>
+
+      <!-- 应答位横幅：本轮有人在答/待答时显示，让你看见编排过程 -->
+      <div v-if="currentFloor && currentFloor.active" class="floor-bar small px-4 py-1" role="status">
+        <template v-if="currentFloor.holder">🖊 <strong>{{ currentFloor.holder_name }}</strong> 正在回答本轮问题…</template>
+        <template v-else>❓ 本轮问题待应答…</template>
+        <span v-if="currentFloor.queue_names && currentFloor.queue_names.length">
+          · 排队：{{ currentFloor.queue_names.join('、') }}</span>
+      </div>
 
       <div class="transcript-wrap flex-grow-1 position-relative" style="min-height:0">
         <div class="transcript h-100 overflow-auto p-4" ref="transcript" @scroll="onScroll">

@@ -22,6 +22,7 @@ createApp({
       agents: {},        // id -> 智能体
       rooms: {},         // id -> 主题
       messages: {},      // room_id -> [消息]
+      floors: {},        // room_id -> 应答位状态 { holder, holder_name, queue, queue_names, active, ... }
       server: {},
       currentRoomId: null,
       draft: "",
@@ -52,6 +53,8 @@ createApp({
     currentMessages() { return this.messages[this.currentRoomId] || []; },
     // 是否显示"回到最新"悬浮箭头：当前主题有消息、且用户已滚上去（未贴底）时显示。
     showJumpLatest() { return !this.stick && this.currentMessages.length > 0; },
+    // 当前主题的应答位状态（应答编排）；active 时才在头部显示"谁正在回答/排队"。
+    currentFloor() { return this.floors[this.currentRoomId] || null; },
     // 被视为"已回复"的提问 id 集合：仅当**用户（human）引用回复了这条提问本身**才算。
     // 不再用"提问之后出现过任何人类发言"来判断——否则用户引用回复其它消息、或发别的与
     // 该提问无关的消息时，会把尚未回答的提问误标为"已回复"。要标记某条提问为已回复，
@@ -173,9 +176,14 @@ createApp({
           break;
         case "room_status": { const r = this.rooms[ev.room_id]; if (r) { r.status = ev.status; r.turn = ev.turn; } break; }
         case "room_reset": this.messages[ev.room_id] = []; break;
+        case "answer_floor": this.floors[ev.room_id] = ev.floor; break;
+        case "floor_config":
+          this.server = { ...this.server, floor_scope: ev.scope, floor_enforcement: ev.enforcement };
+          break;
         case "room_removed": {
           delete this.rooms[ev.room_id];
           delete this.messages[ev.room_id];
+          delete this.floors[ev.room_id];
           if (this.currentRoomId === ev.room_id) {
             this.currentRoomId = Object.keys(this.rooms)[0] || null;
             this.replyTo = null;
@@ -193,6 +201,7 @@ createApp({
       this.agents = Object.fromEntries(snap.agents.map((a) => [a.id, a]));
       this.rooms = Object.fromEntries(snap.rooms.map((r) => [r.id, r]));
       this.messages = snap.messages || {};
+      this.floors = snap.floors || {};
       this.server = snap.server || {};
       if (!this.currentRoomId || !this.rooms[this.currentRoomId]) {
         this.currentRoomId = snap.rooms[0]?.id || null;
@@ -277,6 +286,8 @@ createApp({
     async roomAction(action) {
       if (this.currentRoom) await this.api("POST", `/api/rooms/${this.currentRoom.id}/${action}`);
     },
+    // 应答编排配置（scope: off/human/broadcast，enforcement: soft/hard）。
+    setFloorConfig(patch) { this.api("PATCH", "/api/answer-floor", patch).catch(() => {}); },
     deleteRoom(room) {
       if (!room) return;
       if (confirm(`删除主题「${room.name}」？该主题的全部消息也会一并删除，且不可恢复。`)) {

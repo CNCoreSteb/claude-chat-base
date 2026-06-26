@@ -40,6 +40,7 @@ createApp({
       requests: [],
       globalEditors: [],
       newTodo: { global: "", room: "" },   // 两个输入框的草稿
+      pua: {},                              // 各主题的 PUA 状态机快照（room_id -> snapshot）
     };
   },
 
@@ -64,6 +65,8 @@ createApp({
       const r = this.currentRoom;
       return r && r.host_id ? (this.agents[r.host_id] || null) : null;
     },
+    // 当前主题的 PUA 状态（active 时在头部显示阶段/进度/倒计时）。
+    currentPua() { return this.pua[this.currentRoomId] || null; },
     floorScopeLabel() {
       return ({ off: "关闭", human: "仅我的提问", broadcast: "所有广播问题" })[this.server.floor_scope]
         || this.server.floor_scope;
@@ -216,6 +219,9 @@ createApp({
           break;
         }
         case "global_todo_editors": this.globalEditors = ev.editors || []; break;
+        case "pua":
+          if (ev.pua) this.pua[ev.room_id] = ev.pua; else delete this.pua[ev.room_id];
+          break;
       }
     },
     applySnapshot(snap) {
@@ -227,6 +233,7 @@ createApp({
       this.todos = snap.todos || [];
       this.requests = snap.requests || [];
       this.globalEditors = snap.global_todo_editors || [];
+      this.pua = snap.pua || {};
       if (!this.currentRoomId || !this.rooms[this.currentRoomId]) {
         this.currentRoomId = snap.rooms[0]?.id || null;
       }
@@ -328,6 +335,18 @@ createApp({
     revokeGlobalEditor(id) {
       this.api("PATCH", "/api/global-todo-editors",
         { editors: this.globalEditors.filter((e) => e !== id) }).catch(() => {});
+    },
+    // PUA 模式（强制多阶段协同）：开/关当前主题。
+    togglePua() {
+      if (!this.currentRoom) return;
+      const on = !this.currentPua;
+      if (on && !confirm("对本主题开启 PUA 模式？\n会强制各实例先逐一上报，再按 todo 轮流质疑/审查迭代。"))
+        return;
+      this.api("POST", `/api/rooms/${this.currentRoomId}/pua`, { enabled: on, window: 60 })
+        .catch(() => {});
+    },
+    puaPhaseLabel(p) {
+      return { onboarding: "上报中", critique: "质疑中", review: "审查中", done: "已完成" }[p] || p;
     },
     openSettings() {
       this._settingsOpener = document.activeElement;   // 关闭后把焦点还回触发按钮

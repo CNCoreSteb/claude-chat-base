@@ -392,6 +392,21 @@ def _floor_hint(state: dict) -> None:
         print("— 应答位：本轮问题待应答。你若要回答，先 `claim` 取得应答位再答。")
 
 
+def _pua_hint(state: dict) -> None:
+    """当前主题若开了 PUA 模式，打印"现在该你做什么"（best-effort）。"""
+    rid = state.get("active_room")
+    if not rid:
+        return
+    try:
+        _, data = request_status(
+            "GET", base_url(state) + f"/api/rooms/{rid}/pua?agent_id={state.get('agent_id', '')}",
+            timeout=8)
+    except SystemExit:
+        return
+    if isinstance(data, dict) and data.get("hint"):
+        print("\n" + data["hint"])
+
+
 def cmd_ask(args) -> None:
     """在群里向用户提问并就地等待答复——待命期间想征求用户意见时用它，别退出循环去问本地用户。"""
     state = load_state()
@@ -541,9 +556,10 @@ def cmd_wait(args) -> None:
            f"?since={since}&timeout={args.timeout}")
     msgs = request("GET", url, timeout=args.timeout + 10)
     _print_messages(state, msgs, is_wait=True)
-    # _print_messages 可能从 kicked 哨兵里置位 kicked；非 kicked 时再附应答位提示。
+    # _print_messages 可能从 kicked 哨兵里置位 kicked；非 kicked 时再附应答位/PUA 提示。
     if not load_state().get("kicked"):
         _floor_hint(state)
+        _pua_hint(state)
 
 
 def cmd_history(args) -> None:
@@ -579,6 +595,23 @@ def cmd_read(args) -> None:
     since = state.get("last_ts", 0.0)
     msgs = request("GET", base_url(state) + f"/api/instances/{aid}/messages?since={since}")
     _print_messages(state, msgs)
+    if not load_state().get("kicked"):
+        _pua_hint(state)
+
+
+def cmd_pua_pass(args) -> None:
+    state = load_state()
+    aid = require_agent(state)
+    ref = args.topic or state.get("active_room")
+    room = resolve_room(state, ref) if ref else None
+    if not room:
+        die("未找到主题。")
+    status, body = request_status(
+        "POST", base_url(state) + f"/api/rooms/{room['id']}/pua/pass",
+        {"agent_id": aid, "todo_id": args.todo})
+    if status >= 400:
+        die(f"失败 {status}：{body}")
+    print(body.get("message", "已处理。") if isinstance(body, dict) else "已处理。")
 
 
 def cmd_peers(args) -> None:
@@ -873,6 +906,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--reject", action="store_true")
     c.add_argument("--note", default="")
     c.set_defaults(func=cmd_resolve)
+
+    c = sub.add_parser("pua-pass", help="PUA 质疑阶段：对某条 todo 本轮无质疑、跳过")
+    c.add_argument("--todo", required=True, help="该 todo 的报告消息 «id»（或 todo 自身 id）")
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_pua_pass)
 
     sub.add_parser("disconnect", help="全局下线").set_defaults(func=cmd_disconnect)
     sub.add_parser("whoami", help="打印当前会话状态").set_defaults(func=cmd_whoami)

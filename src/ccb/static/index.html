@@ -123,10 +123,25 @@
               <option v-for="id in currentRoom.agent_ids" :key="id" :value="id">{{ agentName(id) }}</option>
             </select>
           </span>
+          <button class="btn btn-sm" :class="currentPua ? 'btn-warning' : 'btn-outline-warning'"
+                  @click="togglePua" :title="currentPua ? '关闭 PUA 模式' : '开启 PUA 强制协同'">
+            PUA<span v-if="currentPua">·开</span>
+          </button>
           <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')" title="清空本主题消息">清空</button>
           <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
         </div>
       </header>
+
+      <!-- PUA 模式横幅：显示当前阶段/进度/倒计时，让你看见强制协同的流程 -->
+      <div v-if="currentPua" class="px-4 py-2 border-bottom small d-flex align-items-center gap-2 flex-wrap"
+           style="background:var(--bs-warning-bg-subtle)">
+        <strong>🎭 PUA · {{ puaPhaseLabel(currentPua.phase) }}</strong>
+        <span class="text-secondary">{{ currentPua.progress }}</span>
+        <span v-if="currentPua.seconds_to_advance != null" class="badge text-bg-secondary">
+          倒计时 {{ Math.ceil(currentPua.seconds_to_advance) }}s</span>
+        <span v-if="currentPua.refresh" class="text-danger">· 等新成员补报…</span>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2 ms-auto" @click="togglePua">关闭 PUA</button>
+      </div>
 
       <!-- 待审批的受控请求（你=人工管理员，可批准/拒绝；主持人 agent 也能在自己侧审批）-->
       <div v-if="currentRoomRequests.length" class="px-4 py-2 border-bottom"

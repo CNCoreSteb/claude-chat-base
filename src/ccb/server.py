@@ -86,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 try:
                     await hub.reconcile_peers()
                     await hub.reconcile_floors()
+                    await hub.pua.tick()
                     hub.last_reconcile_at = time.time()
                     hub.reconcile_count += 1
                 except asyncio.CancelledError:
@@ -208,6 +209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if agent_id not in room.agent_ids:
             room.agent_ids.append(agent_id)
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
+        await hub().pua.on_join(room_id, agent_id)
         return room.model_dump()
 
     @app.delete("/api/rooms/{room_id}/agents/{agent_id}")
@@ -254,6 +256,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     f"应答编排(hard)：{who} 正在回答本轮问题；请先 claim_answer 取得应答位或排队，"
                     "轮到你再回答（避免一拥而上重复回答）。",
                 )
+            # PUA 模式硬拦截：不符合当前阶段/轮次的发送挡回（附原因指引）。
+            pua_block = hub().pua.blocks(room_id, agent.id, reply_to)
+            if pua_block:
+                raise HTTPException(409, pua_block)
             msg = Message(
                 room_id=room_id,
                 sender_id=agent.id,
@@ -388,6 +394,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if existing.id not in room.agent_ids:
                 room.agent_ids.append(existing.id)
                 await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
+            await hub().pua.on_join(room_id, existing.id)
             return {"agent_id": existing.id, "room_id": room_id, "color": existing.color,
                     "claimed": True}
 
@@ -407,6 +414,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await hub().mark_peer_seen(agent.id)
         await hub().broadcast({"type": "agent_added", "agent": agent.model_dump()})
         await hub().update_room(room_id, RoomUpdate(agent_ids=room.agent_ids))
+        await hub().pua.on_join(room_id, agent.id)
         return {"agent_id": agent.id, "room_id": room_id, "color": agent.color,
                 "claimed": False}
 
@@ -578,6 +586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     content=f"{inviter_name} 把 {match.name}{tag} 拉进了本房间。",
                 )
             )
+        await hub().pua.on_join(room_id, match.id)
         return {"agent_id": match.id, "room_id": room_id, "name": match.name,
                 "already_member": False}
 
@@ -737,6 +746,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolved = await hub().resolve_request(
             req_id, approver, bool(body.get("approve")), (body.get("note") or "").strip())
         return resolved.model_dump()
+
+    # ----- PUA 模式（强制多阶段协同）------------------------------------------
+
+    @app.post("/api/rooms/{room_id}/pua")
+    async def set_pua(room_id: str, body: dict) -> dict:
+        """开/关某主题的 PUA 模式（人工）。enabled=true 进入上报阶段；window=安静窗口秒数。"""
+        if not hub().store.get_room(room_id):
+            raise HTTPException(404, "房间不存在")
+        if body.get("enabled"):
+            window = float(body.get("window") or 60.0)
+            await hub().pua.enable(room_id, window)
+        else:
+            await hub().pua.disable(room_id)
+        return {"ok": True, "pua": hub().pua.snapshot(room_id)}
+
+    @app.get("/api/rooms/{room_id}/pua")
+    async def get_pua(room_id: str, agent_id: str = "") -> dict:
+        """读 PUA 状态；带 agent_id 时附带给该实例的"现在该你做什么"提示。"""
+        return {"pua": hub().pua.snapshot(room_id),
+                "hint": hub().pua.agent_hint(room_id, agent_id) if agent_id else None}
+
+    @app.post("/api/rooms/{room_id}/pua/pass")
+    async def pua_pass(room_id: str, body: dict) -> dict:
+        """质疑阶段：某实例对某条 todo 本轮无意见、跳过（也推动流程）。"""
+        agent_id = (body.get("agent_id") or "").strip()
+        todo_id = (body.get("todo_id") or "").strip()
+        msg = await hub().pua.pass_todo(room_id, agent_id, todo_id)
+        return {"ok": True, "message": msg, "pua": hub().pua.snapshot(room_id)}
 
     # ----- WebSocket ----------------------------------------------------------
 

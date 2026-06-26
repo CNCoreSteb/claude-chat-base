@@ -24,6 +24,7 @@ from .models import (
     RoomUpdate,
     Todo,
 )
+from .pua import Pua
 from .store import HISTORY_LIMIT, RECENT_LIMIT, Store
 
 GLOBAL_TODO_EDITORS_KEY = "global_todo_editors"
@@ -65,6 +66,8 @@ class Hub:
         self.last_reconcile_at: float | None = None
         self.reconcile_count: int = 0
         self.last_reconcile_error: str | None = None
+        # PUA 模式（强制多阶段协同）：按房间的内存状态机。
+        self.pua = Pua(self)
 
     # ----- 启动引导 ----------------------------------------------------------
 
@@ -467,6 +470,8 @@ class Hub:
             "todos": [t.model_dump() for t in self.store.all_todos()],
             "requests": [r.model_dump() for r in self.store.list_requests(status="pending")],
             "global_todo_editors": self.global_todo_editors(),
+            "pua": {room.id: self.pua.snapshot(room.id)
+                    for room in self.store.rooms.values() if self.pua.active(room.id)},
         }
 
     # ----- 智能体操作 ---------------------------------------------------------
@@ -525,6 +530,9 @@ class Hub:
         if not agent.online:
             agent.online = True
             await self.broadcast({"type": "agent_updated", "agent": agent.model_dump()})
+            # 刚上线：对它所在的 PUA 房间触发"新成员/补报"刷新。
+            for r in self.store.rooms_for_agent(agent_id):
+                await self.pua.on_join(r.id, agent_id)
 
     async def set_peer_offline(self, agent_id: str) -> None:
         agent = self.store.get_agent(agent_id)
@@ -609,6 +617,7 @@ class Hub:
             holder = (self._floors.get(message.room_id) or {}).get("holder")
             if message.sender_id != holder:
                 await self.open_round(message.room_id, message)
+        await self.pua.on_message(message)  # PUA 模式：推进其状态机
         return message
 
     async def reset_room(self, room_id: str) -> None:
@@ -755,5 +764,6 @@ class Hub:
             await self.post_message(Message(
                 room_id=req.room_id, sender_id="system", sender_name="system", role="system",
                 content=f"{who_name} 批准邀请，把 {tname} 拉进了本房间。"))
+            await self.pua.on_join(req.room_id, target_id)
             return True, f"已邀请 {tname}"
         return False, "未知动作"

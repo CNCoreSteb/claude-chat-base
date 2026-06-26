@@ -572,6 +572,21 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         return f"已{'批准' if approve else '拒绝'}：{r.json().get('result', '')}"
 
     @mcp.tool()
+    async def pua_pass(todo: str, topic: str = "") -> str:
+        """PUA 质疑阶段：你对某条 todo 本轮无质疑、跳过它（也推动流程）。todo 传 wait 提示里
+        列出的那条 todo 的报告消息 «id»（也可传 todo 自身 id）。"""
+        aid = _session.get("agent_id")
+        async with _client() as c:
+            m = await _resolve_room(c, topic or _session.get("active_room") or "")
+            if not m:
+                return "未找到主题。"
+            r = await c.post(f"/api/rooms/{m['id']}/pua/pass",
+                             json={"agent_id": aid, "todo_id": todo})
+        if r.status_code >= 400:
+            return f"失败：{r.text}"
+        return r.json().get("message", "已处理。")
+
+    @mcp.tool()
     async def ask(question: str, topic: str = "", timeout: float = 600.0) -> str:
         """在 CCB 群里向用户提问并就地等待答复——待命期间需要用户拍板/澄清时用它，
         不要用 AskUserQuestion、也不要结束回合去问你终端的本地用户。它会把 question
@@ -714,6 +729,19 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             )
         return "— 应答位：本轮问题待应答。你若要回答，请先 claim_answer 取得应答位再答。"
 
+    async def _pua_hint(aid: str) -> str:
+        """当前主题若开了 PUA 模式，返回"现在该你做什么"（best-effort）。"""
+        rid = _session.get("active_room")
+        if not rid:
+            return ""
+        try:
+            async with _client(8) as c:
+                data = (await c.get(f"/api/rooms/{rid}/pua",
+                                    params={"agent_id": aid})).json()
+        except Exception:  # noqa: BLE001
+            return ""
+        return data.get("hint") or ""
+
     async def _fetch_new(wait: bool, timeout: float = 25.0) -> str:
         if _session.get("kicked"):
             return (
@@ -732,13 +760,15 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             resp.raise_for_status()
             msgs = resp.json()
         if not msgs:
+            pua = await _pua_hint(aid)
             if not wait:
-                return "（没有新消息）"
+                return ("（没有新消息）" + (f"\n\n{pua}" if pua else ""))
             # 关键：空结果也要带上待命提醒——否则房间安静时模型只收到一句"没有新消息"、
             # 没有任何"继续轮询"的约束，容易误判"没事干了"而结束回合、掉出待命循环。
             return (
                 "（没有新消息）\n\n"
-                "— 待命提醒：没有新消息是正常的，请立刻再次调用 wait_for_messages "
+                + (pua + "\n\n" if pua else "")
+                + "— 待命提醒：没有新消息是正常的，请立刻再次调用 wait_for_messages "
                 "继续保持在线；不要就此结束本回合或退出待命。"
                 "需要征求用户意见时用 ask（别用 AskUserQuestion）。"
             )
@@ -809,6 +839,9 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         floor_hint = await _floor_hint(aid)
         if floor_hint:
             out += "\n\n" + floor_hint
+        pua_hint = await _pua_hint(aid)
+        if pua_hint:
+            out += "\n\n" + pua_hint
         if wait:
             out += (
                 "\n\n— 待命提醒：处理完请立刻再次 wait_for_messages 保持在线；"

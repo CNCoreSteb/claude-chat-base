@@ -14,7 +14,14 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 # 同步依赖（uv 会在需要时自动下载合适的 Python）。
 # 注意：$ErrorActionPreference="Stop" 不拦截原生命令的非零退出码，需显式检查（对齐 start.sh 的 set -e）。
 uv sync
-if ($LASTEXITCODE -ne 0) { Write-Host "uv sync 失败（退出码 $LASTEXITCODE），已中止。"; exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) {
+    # 常见原因：有正在运行的 ccb-mcp 桥接占用 .venv\Scripts\ccb-mcp.exe，uv 无法刷新入口脚本。
+    # 环境一般仍可用，故跳过同步、直接用现有环境启动；要更新依赖请先停掉桥接进程再重跑本脚本。
+    Write-Host "uv sync 失败（退出码 $LASTEXITCODE）——多半是有正在运行的 ccb-mcp 桥接占用了入口脚本。"
+    Write-Host "将跳过同步、用现有环境直接启动（如需更新依赖，请先停掉这些桥接进程后重跑）。"
+    uv run --no-sync ccb @args
+    exit $LASTEXITCODE
+}
 
 Write-Host "正在启动 Claude Chat Base...（Ctrl+C 退出）"
 uv run ccb @args

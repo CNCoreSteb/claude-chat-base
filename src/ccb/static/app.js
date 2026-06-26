@@ -35,6 +35,11 @@ createApp({
       // 经 @ 自动补全**明确选中**的参与者：[{ id, name }]。发送时按 agentid 显式带给服务端，
       // 让"这条主要发给谁"不再只靠正文文本解析（重名/措辞都不怕）。
       pickedMentions: [],
+      // 三级 TODO（全局/主题/各 agent）、受控请求队列、全局 todo 被授权的 agentid。
+      todos: [],
+      requests: [],
+      globalEditors: [],
+      newTodo: { global: "", room: "" },   // 两个输入框的草稿
     };
   },
 
@@ -46,9 +51,26 @@ createApp({
     showJumpLatest() { return !this.stick && this.currentMessages.length > 0; },
     // 当前主题的应答位状态（应答编排）；active 时才在头部显示"谁正在回答/排队"。
     currentFloor() { return this.floors[this.currentRoomId] || null; },
+    // 三级 TODO 视图。
+    globalTodos() { return this.todos.filter((t) => t.scope === "global"); },
+    currentRoomTodos() {
+      return this.todos.filter((t) => t.scope === "room" && t.scope_id === this.currentRoomId);
+    },
+    // 当前主题待审批的受控请求（主持人/你可批/拒）。
+    currentRoomRequests() {
+      return this.requests.filter((r) => r.room_id === this.currentRoomId && r.status === "pending");
+    },
+    currentHost() {
+      const r = this.currentRoom;
+      return r && r.host_id ? (this.agents[r.host_id] || null) : null;
+    },
     floorScopeLabel() {
       return ({ off: "关闭", human: "仅我的提问", broadcast: "所有广播问题" })[this.server.floor_scope]
         || this.server.floor_scope;
+    },
+    directedLabel() {
+      return ({ all: "全部可见", recipient: "仅接收者可见", until_reply: "回复后解禁" })[
+        this.server.directed_visibility] || this.server.directed_visibility;
     },
     // 被视为"已回复"的提问 id 集合：仅当**用户（human）引用回复了这条提问本身**才算。
     // 不再用"提问之后出现过任何人类发言"来判断——否则用户引用回复其它消息、或发别的与
@@ -161,7 +183,8 @@ createApp({
         case "room_reset": this.messages[ev.room_id] = []; break;
         case "answer_floor": this.floors[ev.room_id] = ev.floor; break;
         case "floor_config":
-          this.server = { ...this.server, floor_scope: ev.scope, floor_enforcement: ev.enforcement };
+          this.server = { ...this.server, floor_scope: ev.scope, floor_enforcement: ev.enforcement,
+            directed_visibility: ev.directed_visibility };
           break;
         case "room_removed": {
           const wasActive = this.currentRoomId === ev.room_id;
@@ -178,6 +201,21 @@ createApp({
           break;
         }
         case "message": this.addMessage(ev.message); break;
+        case "todo_added": this.todos.push(ev.todo); break;
+        case "todo_updated": {
+          const i = this.todos.findIndex((t) => t.id === ev.todo.id);
+          if (i >= 0) this.todos.splice(i, 1, ev.todo); else this.todos.push(ev.todo);
+          break;
+        }
+        case "todo_removed":
+          this.todos = this.todos.filter((t) => t.id !== ev.todo_id); break;
+        case "request_added": this.requests.push(ev.request); break;
+        case "request_updated": {
+          const i = this.requests.findIndex((r) => r.id === ev.request.id);
+          if (i >= 0) this.requests.splice(i, 1, ev.request); else this.requests.push(ev.request);
+          break;
+        }
+        case "global_todo_editors": this.globalEditors = ev.editors || []; break;
       }
     },
     applySnapshot(snap) {
@@ -186,6 +224,9 @@ createApp({
       this.messages = snap.messages || {};
       this.floors = snap.floors || {};
       this.server = snap.server || {};
+      this.todos = snap.todos || [];
+      this.requests = snap.requests || [];
+      this.globalEditors = snap.global_todo_editors || [];
       if (!this.currentRoomId || !this.rooms[this.currentRoomId]) {
         this.currentRoomId = snap.rooms[0]?.id || null;
       }
@@ -253,6 +294,41 @@ createApp({
     },
     // 应答编排配置（scope: off/human/broadcast，enforcement: soft/hard）。
     setFloorConfig(patch) { this.api("PATCH", "/api/answer-floor", patch).catch(() => {}); },
+
+    // ----- TODO / 主持人 / 受控请求（GUI 即人工管理员，actor=human）-----
+    async addTodo(scope, scopeId) {
+      const text = (this.newTodo[scope] || "").trim();
+      if (!text) return;
+      await this.api("POST", "/api/todos",
+        { scope, scope_id: scopeId || "", text, actor: "human" }).catch(() => {});
+      this.newTodo[scope] = "";
+    },
+    toggleTodo(t) {
+      this.api("PATCH", `/api/todos/${t.id}`, { done: !t.done, actor: "human" }).catch(() => {});
+    },
+    removeTodo(id) { this.api("DELETE", `/api/todos/${id}?actor=human`).catch(() => {}); },
+    agentName(id) { return this.agents[id]?.name || (id === "human" ? "你" : id); },
+    setHost(hostId) {
+      if (!this.currentRoom) return;
+      this.api("PATCH", `/api/rooms/${this.currentRoomId}/host`, { host_id: hostId }).catch(() => {});
+    },
+    resolveRequest(id, approve) {
+      this.api("POST", `/api/requests/${id}/resolve`, { approver: "human", approve }).catch(() => {});
+    },
+    requestSummary(r) {
+      const p = r.payload || {};
+      const tgt = p.target_name || p.text || p.todo_id || "";
+      return `${r.requested_by_name || r.requested_by} 请求 ${r.action} ${tgt}`;
+    },
+    grantGlobalEditor(id) {
+      if (!id || this.globalEditors.includes(id)) return;
+      this.api("PATCH", "/api/global-todo-editors",
+        { editors: [...this.globalEditors, id] }).catch(() => {});
+    },
+    revokeGlobalEditor(id) {
+      this.api("PATCH", "/api/global-todo-editors",
+        { editors: this.globalEditors.filter((e) => e !== id) }).catch(() => {});
+    },
     openSettings() {
       this._settingsOpener = document.activeElement;   // 关闭后把焦点还回触发按钮
       this.bsSettings.show();

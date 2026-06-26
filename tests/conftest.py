@@ -9,6 +9,13 @@ from ccb.hub import Hub
 from ccb.models import Agent, Room
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env(monkeypatch):
+    """测试必须 hermetic：不读开发者本地 .env，否则其中的 CCB_DEBUG_PORT 等会污染测试、
+    甚至让每个 create_app 都去抢占同一个调试端口而互相绑定失败。"""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(data_dir=tmp_path / "data")

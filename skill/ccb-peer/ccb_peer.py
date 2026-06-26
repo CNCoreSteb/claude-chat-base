@@ -200,10 +200,14 @@ def cmd_standby(args) -> None:
         f"已进入待命：以「{name}」加入主题「{room['name']}」（仓库 {os.getcwd()}）。\n"
         "现在进入待命循环：反复执行 `wait`（长轮询，期间几乎不耗 token）。返回后——被点名"
         "（消息带 ‹@你·被点名›）时先 `send --text \"收到，正在处理\" --reply-to <该消息id>` 回执，"
-        "再读改本仓库代码用 `send --text` 给结果；与你无关的忽略，继续 `wait`。\n"
+        "再读改本仓库代码用 `send --text` 给结果；与你无关、也没点你的：直接再 `wait`，别回复也别"
+        "解释『与我无关』——每次解释都白烧一个回合，安静等到真正点你的消息即可。\n"
+        "发言尽量定向：这条主要发给某一个特定的人/端时，给 `send` 带 `--to <对方>` 或 "
+        "`--reply-to <对方消息id>`，别广播给全群——服务端可按「定向消息可见性」把它从无关端的 "
+        "`wait` 里过滤掉，无关端就不会被反复叫醒。只有真正面向所有人的事才广播。\n"
         "要征求用户意见时用 `ask --text \"问题\"`：它把问题发到群里（GUI 高亮\"等你回答\"）并就地"
         "等用户回复，期间你始终在线——不要用 AskUserQuestion、也不要结束回合去问本地用户"
-        "（那等于擅自退出待命）。待命期间你的「用户」就是 CCB 群里(GUI 旁)的人。\n"
+        "（那等于擅自退出待命）。待命期间你的「用户」就是 CCB 群里的人（人类）。\n"
         "让你「离开本大厅/退出某主题/你可以走了」时：用 `leave --topic <主题>` 退出那个主题即可，"
         "你仍在线、仍待命、可被 invite 拉回（即便不在任何主题也继续 `wait`），别 disconnect。\n"
         "只有用户明确说「退出待命/下线/停止」要你整体下线时，才执行 `disconnect`。"
@@ -632,6 +636,132 @@ def cmd_whoami(args) -> None:
     ))
 
 
+def _todo_scope_id(state, scope, topic):
+    if scope == "agent":
+        return require_agent(state), None
+    if scope == "global":
+        return "", None
+    ref = topic or state.get("active_room")
+    room = resolve_room(state, ref) if ref else None
+    if not room:
+        return "", "未找到主题（用 --topic 指定）。"
+    return room["id"], None
+
+
+def cmd_todo_list(args) -> None:
+    state = load_state()
+    sid, err = _todo_scope_id(state, args.scope, args.topic)
+    if err:
+        die(err)
+    todos = request("GET", base_url(state) + f"/api/todos?scope={args.scope}&scope_id={sid}")
+    if not todos:
+        print(f"（{args.scope} todo 为空）")
+        return
+    for t in todos:
+        extra = f"（指派 {t['assignee']}）" if t.get("assignee") else ""
+        print(f"- [{'x' if t['done'] else ' '}] «{t['id']}» {t['text']}{extra}")
+
+
+def cmd_todo_add(args) -> None:
+    state = load_state()
+    aid = require_agent(state)
+    sid, err = _todo_scope_id(state, args.scope, args.topic)
+    if err:
+        die(err)
+    status, body = request_status(
+        "POST", base_url(state) + "/api/todos",
+        {"scope": args.scope, "scope_id": sid, "text": args.text,
+         "assignee": args.assignee, "actor": aid})
+    if status == 403:
+        print("无权改这级 todo——主题 todo 需主持人；"
+              "非主持人请用 `request --action todo_add --text ...`。")
+        return
+    if status >= 400:
+        die(f"失败 {status}：{body}")
+    print(f"已加入 {args.scope} todo：{args.text}")
+
+
+def cmd_todo_done(args) -> None:
+    state = load_state()
+    aid = require_agent(state)
+    status, body = request_status(
+        "PATCH", base_url(state) + f"/api/todos/{args.id}",
+        {"done": not args.undone, "actor": aid})
+    if status == 404:
+        die("todo 不存在。")
+    if status == 403:
+        print("无权改这条 todo。")
+        return
+    if status >= 400:
+        die(f"失败 {status}：{body}")
+    print(f"已标记{'未完成' if args.undone else '完成'}。")
+
+
+def cmd_todo_remove(args) -> None:
+    state = load_state()
+    aid = require_agent(state)
+    status, body = request_status(
+        "DELETE", base_url(state) + f"/api/todos/{args.id}?actor={aid}")
+    if status == 403:
+        print("无权删这条 todo。")
+        return
+    if status >= 400:
+        die(f"失败 {status}：{body}")
+    print("已删除。")
+
+
+def cmd_request(args) -> None:
+    state = load_state()
+    aid = require_agent(state)
+    ref = args.topic or state.get("active_room")
+    room = resolve_room(state, ref) if ref else None
+    if not room:
+        die("未找到主题（用 --topic 指定）。")
+    status, body = request_status(
+        "POST", base_url(state) + "/api/requests",
+        {"room_id": room["id"], "action": args.action, "requested_by": aid,
+         "target": args.target, "text": args.text, "todo_id": args.todo_id,
+         "reason": args.reason})
+    if status >= 400:
+        die(f"请求失败 {status}：{body}")
+    print(f"已向「{room['name']}」的主持人投递请求（{args.action}），等待审批。")
+
+
+def cmd_requests(args) -> None:
+    state = load_state()
+    ref = args.topic or state.get("active_room")
+    room = resolve_room(state, ref) if ref else None
+    if not room:
+        die("未找到主题。")
+    reqs = request("GET", base_url(state) + f"/api/requests?room_id={room['id']}&status=pending")
+    if not reqs:
+        print("（没有待审批的请求）")
+        return
+    for q in reqs:
+        p = q.get("payload") or {}
+        tgt = p.get("target_name") or p.get("text") or p.get("todo_id") or ""
+        reason = f"（理由：{q['reason']}）" if q.get("reason") else ""
+        print(f"- «{q['id']}» {q['requested_by_name']} 请求 {q['action']} {tgt}{reason}")
+    print("用 `resolve --id <id>`（加 --reject 拒绝）处理。")
+
+
+def cmd_resolve(args) -> None:
+    state = load_state()
+    aid = require_agent(state)
+    status, body = request_status(
+        "POST", base_url(state) + f"/api/requests/{args.id}/resolve",
+        {"approver": aid, "approve": not args.reject, "note": args.note})
+    if status == 404:
+        die("请求不存在。")
+    if status == 403:
+        print("只有该主题的主持人能审批。")
+        return
+    if status >= 400:
+        die(f"失败 {status}：{body}")
+    result = body.get("result", "") if isinstance(body, dict) else ""
+    print(f"已{'拒绝' if args.reject else '批准'}：{result}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ccb_peer", description="CCB 仓库 peer 客户端（无需 MCP）")
     p.add_argument("--url", help=f"CCB 服务地址（默认 {DEFAULT_URL}）")
@@ -703,6 +833,46 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("leave", help="退出某主题")
     c.add_argument("--topic", default="")
     c.set_defaults(func=cmd_leave)
+
+    c = sub.add_parser("todo-list", help="看 todo（scope=agent/room/global）")
+    c.add_argument("--scope", default="agent", choices=["agent", "room", "global"])
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_todo_list)
+
+    c = sub.add_parser("todo-add", help="加 todo（agent=自己/room=须主持人/global=须授权）")
+    c.add_argument("--text", required=True)
+    c.add_argument("--scope", default="agent", choices=["agent", "room", "global"])
+    c.add_argument("--topic", default="")
+    c.add_argument("--assignee", default="")
+    c.set_defaults(func=cmd_todo_add)
+
+    c = sub.add_parser("todo-done", help="标记某 todo 完成/未完成")
+    c.add_argument("--id", required=True)
+    c.add_argument("--undone", action="store_true", help="改为未完成")
+    c.set_defaults(func=cmd_todo_done)
+
+    c = sub.add_parser("todo-remove", help="删一条 todo")
+    c.add_argument("--id", required=True)
+    c.set_defaults(func=cmd_todo_remove)
+
+    c = sub.add_parser("request", help="非主持人投递受控请求（kick/invite/close/todo_*）给主持人审批")
+    c.add_argument("--action", required=True)
+    c.add_argument("--target", default="")
+    c.add_argument("--text", default="")
+    c.add_argument("--todo-id", dest="todo_id", default="")
+    c.add_argument("--reason", default="")
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_request)
+
+    c = sub.add_parser("requests", help="看本主题待审批请求（主持人据此 resolve）")
+    c.add_argument("--topic", default="")
+    c.set_defaults(func=cmd_requests)
+
+    c = sub.add_parser("resolve", help="主持人审批一条请求（缺省批准，--reject 拒绝）")
+    c.add_argument("--id", required=True)
+    c.add_argument("--reject", action="store_true")
+    c.add_argument("--note", default="")
+    c.set_defaults(func=cmd_resolve)
 
     sub.add_parser("disconnect", help="全局下线").set_defaults(func=cmd_disconnect)
     sub.add_parser("whoami", help="打印当前会话状态").set_defaults(func=cmd_whoami)

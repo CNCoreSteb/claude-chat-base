@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import Settings
 from .hub import Hub
 from .models import (
+    ActionRequest,
     Agent,
     AgentCreate,
     AgentKind,
@@ -187,10 +188,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return room.model_dump()
 
     @app.delete("/api/rooms/{room_id}")
-    async def delete_room(room_id: str) -> dict:
-        """删除一个主题（含其全部消息）。允许删除任何主题，包括「大厅」。"""
-        if not await hub().delete_room(room_id):
+    async def delete_room(room_id: str, actor: str = "human") -> dict:
+        """关闭/删除一个主题（含其全部消息）。人工/主持人可直接关；非主持人 agent 须走
+        request_action(close) 由主持人审批。允许关任何主题，包括「大厅」。"""
+        if not hub().store.get_room(room_id):
             raise HTTPException(404, "房间不存在")
+        if not hub().is_host(room_id, actor):
+            raise HTTPException(403, "你不是本主题主持人，请用 request_action 投递关闭请求")
+        await hub().delete_room(room_id)
         return {"ok": True, "room_id": room_id}
 
     @app.post("/api/rooms/{room_id}/agents/{agent_id}")
@@ -537,6 +542,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         room = hub().store.get_room(room_id)
         if not room:
             raise HTTPException(404, "房间不存在")
+        # 主持人/人工可直接邀请；非主持人 agent 须改走 request_action 投递请求由主持人审批。
+        by = (body.get("by") or "").strip()
+        if by and not hub().is_host(room_id, by):
+            raise HTTPException(403, "你不是本主题主持人，请用 request_action 投递邀请请求")
         target = (body.get("target") or "").strip()
         if not target:
             raise HTTPException(400, "target 不能为空")
@@ -602,13 +611,132 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.patch("/api/answer-floor")
     async def set_answer_floor(body: dict) -> dict:
-        """运行期切换应答编排配置（GUI 用）：scope=off/human/broadcast，enforcement=soft/hard。"""
-        hub().set_floor_config(scope=body.get("scope"), enforcement=body.get("enforcement"))
+        """运行期切换协同配置（GUI 用）：scope=off/human/broadcast，enforcement=soft/hard，
+        directed_visibility=all/recipient/until_reply。"""
+        hub().set_floor_config(
+            scope=body.get("scope"), enforcement=body.get("enforcement"),
+            directed=body.get("directed_visibility"),
+        )
         await hub().broadcast(
             {"type": "floor_config", "scope": hub().floor_scope,
-             "enforcement": hub().floor_enforcement}
+             "enforcement": hub().floor_enforcement,
+             "directed_visibility": hub().directed_visibility}
         )
-        return {"scope": hub().floor_scope, "enforcement": hub().floor_enforcement}
+        return {"scope": hub().floor_scope, "enforcement": hub().floor_enforcement,
+                "directed_visibility": hub().directed_visibility}
+
+    # ----- TODO（各 agent / 主题 / 全局三级）---------------------------------
+
+    @app.get("/api/todos")
+    async def list_todos(scope: str, scope_id: str = "") -> list[dict]:
+        return [t.model_dump() for t in hub().store.list_todos(scope, scope_id)]
+
+    @app.post("/api/todos")
+    async def create_todo(body: dict) -> dict:
+        """新增 todo。actor=发起者（agent_id 或缺省 "human"）。按 scope 鉴权：
+        agent=本人 / room=主持人 / global=人工或被授权 agent。"""
+        actor = (body.get("actor") or "human").strip()
+        scope = body.get("scope") or "agent"
+        scope_id = (body.get("scope_id") or "").strip()
+        text = (body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "text 不能为空")
+        if scope not in ("agent", "room", "global"):
+            raise HTTPException(400, "scope 非法")
+        if not hub().can_edit_todo(actor, scope, scope_id):
+            raise HTTPException(403, "无权改这级 todo（主题 todo 需主持人、全局 todo 需授权）")
+        assignee = (body.get("assignee") or "").strip()
+        todo = await hub().add_todo(actor, scope, scope_id, text, assignee)
+        return todo.model_dump()
+
+    @app.patch("/api/todos/{todo_id}")
+    async def patch_todo(todo_id: str, body: dict) -> dict:
+        todo = hub().store.get_todo(todo_id)
+        if not todo:
+            raise HTTPException(404, "todo 不存在")
+        actor = (body.get("actor") or "human").strip()
+        if not hub().can_edit_todo(actor, todo.scope, todo.scope_id):
+            raise HTTPException(403, "无权改这条 todo")
+        updated = await hub().update_todo(
+            todo_id, text=body.get("text"), done=body.get("done"), assignee=body.get("assignee"))
+        return updated.model_dump()
+
+    @app.delete("/api/todos/{todo_id}")
+    async def delete_todo(todo_id: str, actor: str = "human") -> dict:
+        todo = hub().store.get_todo(todo_id)
+        if not todo:
+            raise HTTPException(404, "todo 不存在")
+        if not hub().can_edit_todo(actor, todo.scope, todo.scope_id):
+            raise HTTPException(403, "无权删这条 todo")
+        await hub().remove_todo(todo_id)
+        return {"ok": True}
+
+    @app.get("/api/global-todo-editors")
+    async def get_global_editors() -> dict:
+        return {"editors": hub().global_todo_editors()}
+
+    @app.patch("/api/global-todo-editors")
+    async def set_global_editors(body: dict) -> dict:
+        """人工给全局 todo 授权：editors=被授权的 agent_id 列表。"""
+        editors = await hub().set_global_todo_editors(list(body.get("editors") or []))
+        return {"editors": editors}
+
+    # ----- 主持人 + 受控请求 -------------------------------------------------
+
+    @app.patch("/api/rooms/{room_id}/host")
+    async def set_room_host(room_id: str, body: dict) -> dict:
+        """改派主持人（人工）。host_id 传成员的 agent_id，传空=取消主持人。"""
+        host_id = (body.get("host_id") or "").strip()
+        room = hub().store.get_room(room_id)
+        if not room:
+            raise HTTPException(404, "房间不存在")
+        if host_id and host_id not in room.agent_ids:
+            raise HTTPException(400, "主持人必须是本主题成员")
+        room = await hub().set_host(room_id, host_id)
+        return room.model_dump()
+
+    @app.get("/api/requests")
+    async def list_requests(room_id: str = "", status: str = "pending") -> list[dict]:
+        return [r.model_dump() for r in hub().store.list_requests(room_id, status)]
+
+    @app.post("/api/requests")
+    async def create_request(body: dict) -> dict:
+        """非主持人投递受控动作请求：action=kick/invite/close/todo_add/todo_update/todo_remove。
+        kick/invite 的 target（职责/名字/id）在此解析为 target_id 存入 payload。"""
+        room_id = (body.get("room_id") or "").strip()
+        action = (body.get("action") or "").strip()
+        requester = (body.get("requested_by") or "").strip()
+        if not hub().store.get_room(room_id):
+            raise HTTPException(404, "房间不存在")
+        if action not in ("kick", "invite", "close", "todo_add", "todo_update", "todo_remove"):
+            raise HTTPException(400, "action 非法")
+        payload = {k: body[k] for k in ("text", "assignee", "todo_id", "done") if k in body}
+        if action in ("kick", "invite"):
+            match = _find_instance(hub(), (body.get("target") or "").strip())
+            if not match:
+                raise HTTPException(404, "未找到目标实例")
+            payload["target_id"] = match.id
+            payload["target_name"] = match.name
+        agent = hub().store.get_agent(requester)
+        req = ActionRequest(
+            room_id=room_id, action=action, requested_by=requester,
+            requested_by_name=agent.name if agent else requester,
+            payload=payload, reason=(body.get("reason") or "").strip())
+        await hub().submit_request(req)
+        return req.model_dump()
+
+    @app.post("/api/requests/{req_id}/resolve")
+    async def resolve_request(req_id: str, body: dict) -> dict:
+        """主持人/人工审批请求：approve=true 通过并执行、false 拒绝。"""
+        req = hub().store.get_request(req_id)
+        if not req:
+            raise HTTPException(404, "请求不存在")
+        approver = (body.get("approver") or "human").strip()
+        if not hub().is_host(req.room_id, approver):
+            raise HTTPException(403, "只有该主题的主持人（或人工）能审批")
+        resolved = await hub().resolve_request(
+            req_id, approver, bool(body.get("approve")), (body.get("note") or "").strip())
+        return resolved.model_dump()
 
     # ----- WebSocket ----------------------------------------------------------
 
@@ -678,7 +806,11 @@ def _kicked_payload() -> list[dict]:
 
 
 def _instance_new_messages(hub: Hub, agent_id: str, since: float) -> list[dict]:
-    """该实例所在全部房间中、since 之后的新消息，附带房间名以便区分。"""
+    """该实例所在全部房间中、since 之后的新消息，附带房间名以便区分。
+
+    按 directed_visibility 过滤掉「不该让本实例看到的定向消息」（仅 agent 侧；GUI 不经此路径）。
+    过滤后为空时长轮询会继续等待——所以被隐藏的定向消息不会让 wait 空转返回。
+    """
     rooms = hub.store.rooms_for_agent(agent_id)
     room_names = {r.id: r.name for r in rooms}
     msgs = hub.store.messages_for_rooms_since([r.id for r in rooms], since)
@@ -687,7 +819,7 @@ def _instance_new_messages(hub: Hub, agent_id: str, since: float) -> list[dict]:
         d = m.model_dump()
         d["room_name"] = room_names.get(m.room_id, "")
         out.append(d)
-    return out
+    return hub.filter_visible(out, agent_id, time.time())
 
 
 def _find_instance(hub: Hub, target: str) -> Agent | None:

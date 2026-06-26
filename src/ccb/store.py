@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from .models import Agent, Message, Room
+from .models import ActionRequest, Agent, Message, Room, Todo
 
 # 不写入配置（DB）的运行期字段——重启后应回到默认值。
 _AGENT_RUNTIME_FIELDS = {"online", "last_seen"}
@@ -78,6 +78,15 @@ class Store:
                     meta        TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_room_ts ON messages(room_id, ts);
+                CREATE TABLE IF NOT EXISTS todos (
+                    id TEXT PRIMARY KEY, scope TEXT, scope_id TEXT, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_todos_scope ON todos(scope, scope_id);
+                CREATE TABLE IF NOT EXISTS requests (
+                    id TEXT PRIMARY KEY, room_id TEXT, status TEXT, ts REAL, data TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_requests_room ON requests(room_id, status);
+                CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
                 """
             )
             self._conn.commit()
@@ -221,6 +230,96 @@ class Store:
     def clear_messages(self, room_id: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM messages WHERE room_id=?", (room_id,))
+            self._conn.commit()
+
+    # ----- TODO -------------------------------------------------------------
+
+    def upsert_todo(self, todo: Todo) -> Todo:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO todos(id, scope, scope_id, data) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET scope=excluded.scope, scope_id=excluded.scope_id, "
+                "data=excluded.data",
+                (todo.id, todo.scope, todo.scope_id,
+                 json.dumps(todo.model_dump(), ensure_ascii=False)),
+            )
+            self._conn.commit()
+        return todo
+
+    def get_todo(self, todo_id: str) -> Todo | None:
+        with self._lock:
+            row = self._conn.execute("SELECT data FROM todos WHERE id=?", (todo_id,)).fetchone()
+        return Todo(**json.loads(row["data"])) if row else None
+
+    def list_todos(self, scope: str, scope_id: str = "") -> list[Todo]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT data FROM todos WHERE scope=? AND scope_id=? ORDER BY rowid",
+                (scope, scope_id),
+            ).fetchall()
+        return [Todo(**json.loads(r["data"])) for r in rows]
+
+    def all_todos(self) -> list[Todo]:
+        with self._lock:
+            rows = self._conn.execute("SELECT data FROM todos ORDER BY rowid").fetchall()
+        return [Todo(**json.loads(r["data"])) for r in rows]
+
+    def remove_todo(self, todo_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM todos WHERE id=?", (todo_id,))
+            self._conn.commit()
+
+    def remove_todos_for_scope(self, scope: str, scope_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM todos WHERE scope=? AND scope_id=?", (scope, scope_id))
+            self._conn.commit()
+
+    # ----- 受控动作请求 -------------------------------------------------------
+
+    def upsert_request(self, req: ActionRequest) -> ActionRequest:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO requests(id, room_id, status, ts, data) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data",
+                (req.id, req.room_id, req.status, req.ts,
+                 json.dumps(req.model_dump(), ensure_ascii=False)),
+            )
+            self._conn.commit()
+        return req
+
+    def get_request(self, req_id: str) -> ActionRequest | None:
+        with self._lock:
+            row = self._conn.execute("SELECT data FROM requests WHERE id=?", (req_id,)).fetchone()
+        return ActionRequest(**json.loads(row["data"])) if row else None
+
+    def list_requests(self, room_id: str = "", status: str = "") -> list[ActionRequest]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if room_id:
+            clauses.append("room_id=?")
+            params.append(room_id)
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT data FROM requests{where} ORDER BY ts", params).fetchall()
+        return [ActionRequest(**json.loads(r["data"])) for r in rows]
+
+    # ----- KV（全局单例配置，如全局 todo 编辑者集合）---------------------------
+
+    def get_kv(self, key: str, default: str = "") -> str:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_kv(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO kv(key, value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
             self._conn.commit()
 
     # ----- 只读调试统计（供调试页；都用单连接+锁、只走廉价索引聚合，不扫全表内容）-----------

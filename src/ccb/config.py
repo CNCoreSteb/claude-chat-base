@@ -42,10 +42,16 @@ class Settings(BaseSettings):
     open_browser: bool = True
 
     # 应答编排（answer floor）：避免广播问题被多个 peer 一拥而上重复回答。运行期可在 GUI 切换。
-    # scope:        off=关闭 / human=仅人类(GUI 用户)提问触发 / broadcast=所有广播问题触发
+    # scope:        off=关闭 / human=仅人类(你)提问触发 / broadcast=所有广播问题触发
     # enforcement:  soft=只记录并告知，agent 自觉让行 / hard=本轮内服务端拒绝非 holder 的回答
     floor_scope: str = "human"
     floor_enforcement: str = "soft"
+
+    # 定向消息可见性（meta.to=某 agent 的消息，对「非接收者」的其它 agent 如何投递）。运行期可在
+    # GUI 切换。仅作用于定向消息；人类 GUI 始终看到全部。
+    # all=都能看到(带"不是你"标注) / recipient=只投给接收者+被@者 /
+    # until_reply=先藏，接收者回复或超时后解禁
+    directed_visibility: str = "all"
 
 
 def load_preset(path: Path) -> tuple[list[Agent], list[Room]]:

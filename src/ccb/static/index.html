@@ -101,6 +101,9 @@
         <div v-if="server.floor_scope && server.floor_scope !== 'off'">
           应答编排：{{ floorScopeLabel }} · {{ server.floor_enforcement === 'hard' ? '硬·拦截' : '软·提示' }}
         </div>
+        <div v-if="server.directed_visibility && server.directed_visibility !== 'all'">
+          定向可见性：{{ directedLabel }}
+        </div>
       </div>
     </aside>
 
@@ -112,10 +115,32 @@
           <p class="text-secondary small mb-0">{{ currentRoom ? currentRoom.topic : '' }}</p>
         </div>
         <div v-if="currentRoom" class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+          <span class="small text-secondary d-flex align-items-center gap-1" title="主持人（人工可改派）">
+            🛡 主持人
+            <select class="form-select form-select-sm" style="width:auto;display:inline-block"
+                    :value="currentRoom.host_id || ''" @change="setHost($event.target.value)">
+              <option value="">（无）</option>
+              <option v-for="id in currentRoom.agent_ids" :key="id" :value="id">{{ agentName(id) }}</option>
+            </select>
+          </span>
           <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')" title="清空本主题消息">清空</button>
           <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
         </div>
       </header>
+
+      <!-- 待审批的受控请求（你=人工管理员，可批准/拒绝；主持人 agent 也能在自己侧审批）-->
+      <div v-if="currentRoomRequests.length" class="px-4 py-2 border-bottom"
+           style="background:var(--bs-warning-bg-subtle)">
+        <div class="small fw-semibold mb-1">⚖ 待审批请求（{{ currentRoomRequests.length }}）</div>
+        <div v-for="r in currentRoomRequests" :key="r.id"
+             class="d-flex align-items-center gap-2 small mb-1">
+          <span class="flex-grow-1">{{ requestSummary(r) }}<span v-if="r.reason"
+            class="text-secondary">（{{ r.reason }}）</span></span>
+          <button class="btn btn-sm btn-success py-0 px-2" @click="resolveRequest(r.id, true)">批准</button>
+          <button class="btn btn-sm btn-outline-secondary py-0 px-2"
+                  @click="resolveRequest(r.id, false)">拒绝</button>
+        </div>
+      </div>
 
       <!-- 应答位横幅：本轮有人在答/待答时显示，让你看见编排过程 -->
       <div v-if="currentFloor && currentFloor.active" class="floor-bar small px-4 py-1" role="status">
@@ -231,6 +256,45 @@
           <option v-for="a in availableAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
         </select>
       </div>
+
+      <!-- TODO：全局 + 当前主题（你=人工，可直接增删改）-->
+      <div class="todo-pane border-top p-3 overflow-auto">
+        <div class="d-flex align-items-center mb-1">
+          <span class="fw-semibold small">📋 全局 TODO</span>
+          <span class="text-secondary" style="font-size:11px;margin-left:auto">人工 + 授权 agent</span>
+        </div>
+        <ul class="list-unstyled mb-2">
+          <li v-for="t in globalTodos" :key="t.id" class="todo-item d-flex align-items-center gap-2 small">
+            <input type="checkbox" :checked="t.done" @change="toggleTodo(t)" />
+            <span class="flex-grow-1" :class="{ 'text-decoration-line-through text-secondary': t.done }">{{ t.text }}</span>
+            <button class="btn btn-sm btn-link p-0 text-secondary" @click="removeTodo(t.id)" title="删除">✕</button>
+          </li>
+          <li v-if="!globalTodos.length" class="text-secondary small">（空）</li>
+        </ul>
+        <div class="input-group input-group-sm mb-3">
+          <input class="form-control" v-model="newTodo.global" placeholder="新增全局待办…"
+                 @keydown.enter="addTodo('global', '')" />
+          <button class="btn btn-outline-secondary" @click="addTodo('global', '')">＋</button>
+        </div>
+
+        <template v-if="currentRoom">
+          <div class="fw-semibold small mb-1">📌 本主题 TODO
+            <span class="text-secondary" style="font-size:11px">（主持人 / 你）</span></div>
+          <ul class="list-unstyled mb-2">
+            <li v-for="t in currentRoomTodos" :key="t.id" class="todo-item d-flex align-items-center gap-2 small">
+              <input type="checkbox" :checked="t.done" @change="toggleTodo(t)" />
+              <span class="flex-grow-1" :class="{ 'text-decoration-line-through text-secondary': t.done }">{{ t.text }}</span>
+              <button class="btn btn-sm btn-link p-0 text-secondary" @click="removeTodo(t.id)" title="删除">✕</button>
+            </li>
+            <li v-if="!currentRoomTodos.length" class="text-secondary small">（空）</li>
+          </ul>
+          <div class="input-group input-group-sm">
+            <input class="form-control" v-model="newTodo.room" placeholder="新增本主题待办…"
+                   @keydown.enter="addTodo('room', currentRoomId)" />
+            <button class="btn btn-outline-secondary" @click="addTodo('room', currentRoomId)">＋</button>
+          </div>
+        </template>
+      </div>
     </aside>
 
     <!-- 弹窗（Bootstrap modal，内容由 Vue 渲染） -->
@@ -301,7 +365,7 @@
                       :value="server.floor_scope"
                       @change="setFloorConfig({ scope: $event.target.value })">
                 <option value="off">关闭</option>
-                <option value="human">仅我（GUI 用户）的提问</option>
+                <option value="human">仅我（人类用户）的提问</option>
                 <option value="broadcast">所有广播问题</option>
               </select>
               <div v-if="server.floor_scope && server.floor_scope !== 'off'">
@@ -313,6 +377,45 @@
                   <option value="hard">硬 · 拦截（非应答位的回答被服务端挡回）</option>
                 </select>
               </div>
+            </section>
+
+            <!-- 定向消息可见性 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-1">定向消息可见性</div>
+              <p class="text-secondary small mb-2">
+                当一条消息明确「主要发给」某个实例（你 @ 或引用回复它）时，其它实例怎么对待——
+                避免别人擅自插话。你（人类）始终看到全部。改动即时生效。
+              </p>
+              <select class="form-select form-select-sm"
+                      :value="server.directed_visibility"
+                      @change="setFloorConfig({ directed_visibility: $event.target.value })">
+                <option value="all">全部可见 —— 都能看到，非接收者标注「不是你」</option>
+                <option value="recipient">仅接收者可见 —— 其它实例完全看不到</option>
+                <option value="until_reply">回复后解禁 —— 先藏，接收者回复（或超时）后再向所有人开放</option>
+              </select>
+            </section>
+
+            <!-- 全局 TODO 授权 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-1">全局 TODO 授权</div>
+              <p class="text-secondary small mb-2">
+                全局 TODO 默认只有你（人类）能改。可在此把编辑权授予指定实例；其它实例无权改全局 TODO。
+              </p>
+              <div v-if="globalEditors.length" class="d-flex flex-wrap gap-1 mb-2">
+                <span v-for="id in globalEditors" :key="id"
+                      class="badge text-bg-secondary d-inline-flex align-items-center gap-1">
+                  {{ agentName(id) }}
+                  <button class="btn-close btn-close-white" style="font-size:.55rem"
+                          @click="revokeGlobalEditor(id)" aria-label="撤销授权"></button>
+                </span>
+              </div>
+              <select class="form-select form-select-sm"
+                      @change="grantGlobalEditor($event.target.value); $event.target.value=''">
+                <option value="">授权一个实例编辑全局 TODO…</option>
+                <option v-for="a in peerInstances" :key="a.id" :value="a.id"
+                        :disabled="globalEditors.includes(a.id)">
+                  {{ a.name }}（{{ a.role || 'peer' }}）</option>
+              </select>
             </section>
 
             <!-- 服务信息（只读） -->

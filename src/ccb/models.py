@@ -75,6 +75,59 @@ class Room(BaseModel):
     name: str
     topic: str = ""
     agent_ids: list[str] = Field(default_factory=list)
+    # 主持人：默认是建群者；可由人工在 GUI 改派。主持人对本主题有直接的踢/邀/关/改 todo 权，
+    # 非主持人须经 request_action 投递请求由主持人审批。空=暂无主持人（仅人工管理）。
+    host_id: str = ""
+
+
+TodoScope = Literal["agent", "room", "global"]
+
+
+class Todo(BaseModel):
+    id: str = Field(default_factory=lambda: _new_id("todo"))
+    scope: TodoScope = "agent"
+    # scope=agent -> agent_id；scope=room -> room_id；scope=global -> ""。
+    scope_id: str = ""
+    text: str = ""
+    done: bool = False
+    created_by: str = ""        # agent_id 或 "human"
+    assignee: str = ""          # 可选：指派给某 agent_id
+    ts: float = Field(default_factory=_now)
+
+
+class TodoCreate(BaseModel):
+    scope: TodoScope = "agent"
+    scope_id: str = ""
+    text: str
+    assignee: str = ""
+
+
+class TodoUpdate(BaseModel):
+    text: str | None = None
+    done: bool | None = None
+    assignee: str | None = None
+
+
+# 非主持人请求主持人执行的受控动作。
+RequestAction = Literal[
+    "kick", "invite", "close",          # 房间管理
+    "todo_add", "todo_update", "todo_remove",  # 主题 todo 改动
+]
+
+
+class ActionRequest(BaseModel):
+    id: str = Field(default_factory=lambda: _new_id("req"))
+    room_id: str
+    action: RequestAction
+    requested_by: str = ""              # 发起的 agent_id
+    requested_by_name: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)  # 例：{"target_id":..} / {"text":..}
+    reason: str = ""
+    status: Literal["pending", "approved", "rejected"] = "pending"
+    ts: float = Field(default_factory=_now)
+    resolved_by: str = ""               # 审批者 agent_id 或 "human"
+    resolved_ts: float = 0.0
+    result: str = ""                    # 执行结果/拒绝说明
 
 
 class AgentCreate(BaseModel):

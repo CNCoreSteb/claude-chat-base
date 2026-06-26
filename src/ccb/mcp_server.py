@@ -163,14 +163,25 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
             "1. 调用 wait_for_messages（长轮询，阻塞到有新消息才返回，几乎不耗 token）。\n"
             "2. 被点名（消息带 ‹@你·被点名›）时：先用 send_message 回一句『收到，正在处理』，\n"
             "   并带上 reply_to=该消息的 «id»，再读改本仓库代码、用 send_message 给出结果；\n"
-            "   与你无关的消息忽略即可，不要逐条回复。\n"
+            "   与你无关、也没点你的消息：直接再次 wait，别回复、也别解释『与我无关』——每次解释\n"
+            "   都白烧一个回合、徒增上下文，安静等到真正点你的消息即可。\n"
             "3. 无论有无消息，立刻再次调用 wait_for_messages，回到第 1 步，反复保持在线。\n\n"
+            "【发言尽量定向 —— 别让无关的人被反复叫醒】\n"
+            "当你这条主要发给某一个特定的人/端时，给 send_message 带上 to=对方（职责/名字/id）或\n"
+            "reply_to=对方那条消息，别广播给全群——这样服务端可按「定向消息可见性」把它从无关端的\n"
+            "wait 里过滤掉，无关端就不会被你反复叫醒、空耗回合。只有真正面向所有人的事才广播。\n\n"
             "【要征求用户意见时 —— 用 ask，绝不离开待命】\n"
-            "待命期间你的「用户」就是 CCB 群里（GUI 旁）的人。需要用户拍板/澄清时，调用\n"
+            "待命期间你的「用户」就是 CCB 群里的人（人类）。需要用户拍板/澄清时，调用\n"
             "ask（把问题作为入参）：它把问题发到群里（GUI 中高亮为「等你回答」）并就地等用户\n"
             "回复后返回，其间你始终在线。不要用 AskUserQuestion，也不要结束本回合去问\n"
             "你终端的本地用户——那等于擅自退出待命。"
             "需要别的仓库参与时，先 @ 点名或 invite 拉进来再 ask。\n\n"
+            "【主题管理 / 待办（主持人制）】\n"
+            "建群者默认是该主题主持人；只有主持人能直接 invite/kick/关主题、增删改主题 todo。\n"
+            "你若不是主持人，想踢/邀/关/改主题 todo：用 request_action(action, ...) 投递请求，\n"
+            "由主持人 list_requests 看、resolve_request 批/拒。\n"
+            "todo：todo_list/todo_add/todo_done/todo_remove——agent 级是你自己的（随意），\n"
+            "room 级须主持人，global 级须人工授权。\n\n"
             "【面向所有人的问题 —— 先抢应答位，别一拥而上】\n"
             "收到面向所有人（非专门点你）的问题时，先调用 claim_answer：抢到才回答、答完\n"
             "release_answer 放行下一位；没抢到说明已有人在答——先别答，wait 观望并读它的答复，\n"
@@ -251,20 +262,23 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
 
     @mcp.tool()
     async def delete_topic(topic: str = "") -> str:
-        """删除一个主题群（`topic` 为主题名或 id，缺省=当前主题），连同其全部消息一起删除、
-        不可恢复。允许删除「大厅」（缺了它，下次有人 standby 到「大厅」会自动重建）。"""
+        """关闭/删除一个主题群（`topic` 为主题名或 id，缺省=当前主题），连同其全部消息一起删除、
+        不可恢复。只有该主题主持人能直接关；非主持人请改用 request_action(action="close")。"""
+        aid = _session.get("agent_id")
         async with _client() as c:
             room_ref = topic or _session.get("active_room")
             if not room_ref:
-                return "没有当前主题，请用 topic 指定要删除哪个主题。"
+                return "没有当前主题，请用 topic 指定要关哪个主题。"
             match = await _resolve_room(c, room_ref)
             if not match:
                 return f"未找到主题「{room_ref}」。"
-            resp = await c.delete(f"/api/rooms/{match['id']}")
-            resp.raise_for_status()
+            resp = await c.delete(f"/api/rooms/{match['id']}", params={"actor": aid or ""})
+        if resp.status_code == 403:
+            return "你不是本主题主持人，关主题请用 request_action(action=\"close\") 投递请求。"
+        resp.raise_for_status()
         if _session.get("active_room") == match["id"]:
             _session["active_room"] = None
-        return f"已删除主题「{match['name']}」（含其全部消息）。"
+        return f"已关闭主题「{match['name']}」（含其全部消息）。"
 
     # ----- 发现 / 拉群 --------------------------------------------------------
 
@@ -324,6 +338,9 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
                 f"/api/rooms/{match['id']}/invite",
                 json={"target": target, "by": _session["agent_id"]},
             )
+            if resp.status_code == 403:
+                return ("你不是本主题主持人，邀请请用 "
+                        f"request_action(action=\"invite\", target=\"{target}\")。")
             if resp.status_code == 404:
                 return f"未找到职责/名字为「{target}」的已连接实例。先让对方 connect 上线。"
             resp.raise_for_status()
@@ -433,11 +450,132 @@ def build_server():  # noqa: ANN201 - 返回一个 FastMCP 实例
         tail = f"（下一位：{nxt}）" if nxt else "（已空闲）"
         return f"已放行「{match['name']}」的应答位。{tail}"
 
+    # ----- TODO / 受控请求 -----------------------------------------------------
+
+    async def _scope_id(c, scope: str, topic: str) -> tuple[str, str | None]:
+        """返回 (scope_id, error)。agent->自己；room->解析主题；global->空。"""
+        aid = _session.get("agent_id") or ""
+        if scope == "agent":
+            return aid, None
+        if scope == "global":
+            return "", None
+        m = await _resolve_room(c, topic or _session.get("active_room") or "")
+        if not m:
+            return "", "未找到主题（用 topic 指定）。"
+        return m["id"], None
+
+    @mcp.tool()
+    async def todo_list(scope: str = "agent", topic: str = "") -> str:
+        """看 todo。scope=agent（你自己的）/ room（某主题，缺省当前主题）/ global（全局）。"""
+        async with _client() as c:
+            sid, err = await _scope_id(c, scope, topic)
+            if err:
+                return err
+            todos = (await c.get("/api/todos", params={"scope": scope, "scope_id": sid})).json()
+        if not todos:
+            return f"（{scope} todo 为空）"
+        return "\n".join(
+            f"- [{'x' if t['done'] else ' '}] «{t['id']}» {t['text']}"
+            + (f"（指派 {t['assignee']}）" if t.get("assignee") else "")
+            for t in todos)
+
+    @mcp.tool()
+    async def todo_add(text: str, scope: str = "agent", topic: str = "", assignee: str = "") -> str:
+        """加一条 todo。scope=agent（自己，随意）/ room（主题，须主持人）/ global（须人工授权）。
+        非主持人想改主题 todo，请改用 request_action(action="todo_add", text=...)。"""
+        aid = _session.get("agent_id")
+        async with _client() as c:
+            sid, err = await _scope_id(c, scope, topic)
+            if err:
+                return err
+            r = await c.post("/api/todos", json={"scope": scope, "scope_id": sid,
+                                                 "text": text, "assignee": assignee, "actor": aid})
+        if r.status_code == 403:
+            return "无权改这级 todo——主题 todo 需主持人；非主持人请用 request_action(todo_add)。"
+        r.raise_for_status()
+        return f"已加入 {scope} todo：{text}"
+
+    @mcp.tool()
+    async def todo_done(todo_id: str, done: bool = True) -> str:
+        """把某条 todo 标记完成/未完成（按归属鉴权：自己的随意、主题 todo 需主持人）。"""
+        aid = _session.get("agent_id")
+        async with _client() as c:
+            r = await c.patch(f"/api/todos/{todo_id}", json={"done": done, "actor": aid})
+        if r.status_code == 404:
+            return "todo 不存在。"
+        if r.status_code == 403:
+            return "无权改这条 todo。"
+        r.raise_for_status()
+        return f"已标记{'完成' if done else '未完成'}。"
+
+    @mcp.tool()
+    async def todo_remove(todo_id: str) -> str:
+        """删一条 todo（按归属鉴权）。"""
+        aid = _session.get("agent_id")
+        async with _client() as c:
+            r = await c.delete(f"/api/todos/{todo_id}", params={"actor": aid or ""})
+        if r.status_code == 404:
+            return "todo 不存在。"
+        if r.status_code == 403:
+            return "无权删这条 todo。"
+        r.raise_for_status()
+        return "已删除。"
+
+    @mcp.tool()
+    async def request_action(action: str, target: str = "", text: str = "",
+                             todo_id: str = "", reason: str = "", topic: str = "") -> str:
+        """非主持人用它向主持人投递受控请求等审批。action=kick/invite/close/todo_add/todo_update/
+        todo_remove；kick/invite 用 target（职责/名字/id）指定对象，todo_* 用 text/todo_id。"""
+        aid = _session.get("agent_id")
+        async with _client() as c:
+            m = await _resolve_room(c, topic or _session.get("active_room") or "")
+            if not m:
+                return "未找到主题（用 topic 指定）。"
+            r = await c.post("/api/requests", json={
+                "room_id": m["id"], "action": action, "requested_by": aid,
+                "target": target, "text": text, "todo_id": todo_id, "reason": reason})
+        if r.status_code >= 400:
+            return f"请求失败：{r.text}"
+        return f"已向「{m['name']}」的主持人投递请求（{action}），等待审批。"
+
+    @mcp.tool()
+    async def list_requests(topic: str = "") -> str:
+        """看本主题待审批的受控请求（缺省当前主题）。主持人据此用 resolve_request 批准/拒绝。"""
+        async with _client() as c:
+            m = await _resolve_room(c, topic or _session.get("active_room") or "")
+            if not m:
+                return "未找到主题。"
+            reqs = (await c.get("/api/requests",
+                                params={"room_id": m["id"], "status": "pending"})).json()
+        if not reqs:
+            return "（没有待审批的请求）"
+        out = []
+        for q in reqs:
+            p = q.get("payload") or {}
+            tgt = p.get("target_name") or p.get("text") or p.get("todo_id") or ""
+            out.append(f"- «{q['id']}» {q['requested_by_name']} 请求 {q['action']} {tgt}"
+                       + (f"（理由：{q['reason']}）" if q.get("reason") else ""))
+        return "\n".join(out) + "\n用 resolve_request(request_id, approve=True/False) 处理。"
+
+    @mcp.tool()
+    async def resolve_request(request_id: str, approve: bool = True, note: str = "") -> str:
+        """主持人审批一条受控请求：approve=True 通过并执行、False 拒绝。"""
+        aid = _session.get("agent_id")
+        async with _client() as c:
+            r = await c.post(f"/api/requests/{request_id}/resolve",
+                             json={"approver": aid, "approve": approve, "note": note})
+        if r.status_code == 404:
+            return "请求不存在。"
+        if r.status_code == 403:
+            return "只有该主题的主持人能审批。"
+        r.raise_for_status()
+        return f"已{'批准' if approve else '拒绝'}：{r.json().get('result', '')}"
+
     @mcp.tool()
     async def ask(question: str, topic: str = "", timeout: float = 600.0) -> str:
         """在 CCB 群里向用户提问并就地等待答复——待命期间需要用户拍板/澄清时用它，
         不要用 AskUserQuestion、也不要结束回合去问你终端的本地用户。它会把 question
-        发到主题（GUI 中高亮为"等你回答"），然后阻塞长轮询，直到 GUI 旁的用户回话再返回。
+        发到主题（GUI 中高亮为"等你回答"），然后阻塞长轮询，直到用户（人类）回话再返回。
         全程你都留在待命、不会掉线。`timeout` 是最长等待秒数（缺省 10 分钟）。"""
         if not _session["agent_id"]:
             return "请先 connect / join_room。"

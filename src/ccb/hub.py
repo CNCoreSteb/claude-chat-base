@@ -7,12 +7,14 @@ GUI 关心的状态变更都经由某个 ``*`` 辅助方法发出，从而让界
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any
 
 from .config import Settings, load_preset
 from .models import (
+    ActionRequest,
     Agent,
     AgentCreate,
     AgentUpdate,
@@ -20,8 +22,11 @@ from .models import (
     Room,
     RoomCreate,
     RoomUpdate,
+    Todo,
 )
 from .store import HISTORY_LIMIT, RECENT_LIMIT, Store
+
+GLOBAL_TODO_EDITORS_KEY = "global_todo_editors"
 
 log = logging.getLogger("ccb.hub")
 
@@ -34,6 +39,10 @@ ANSWER_FLOOR_TTL = 120.0
 # 开了一轮应答但没人认领（无 holder/队列）超过这么多秒就自动关闭——避免 hard 模式下人类随口
 # 一句就长时间挡住别人回答。比 holder 持有上限短得多。
 ANSWER_ROUND_OPEN_TTL = 30.0
+
+# directed_visibility=until_reply 时，定向消息对其他 agent 最多隐藏这么多秒；接收者一直不回也
+# 兜底解禁，避免永久不可见。
+DIRECTED_HOLD_TTL = 90.0
 
 
 class Hub:
@@ -50,6 +59,7 @@ class Hub:
         # 重复回答。运行期可配置（GUI/env）：scope=off/human/broadcast，enforcement=soft/hard。
         self.floor_scope: str = settings.floor_scope
         self.floor_enforcement: str = settings.floor_enforcement
+        self.directed_visibility: str = settings.directed_visibility
         self._floors: dict[str, dict[str, Any]] = {}
         # reconcile 循环存活度（供调试页判断离线/应答位 TTL 判定是否还在跑）。
         self.last_reconcile_at: float | None = None
@@ -113,11 +123,51 @@ class Hub:
 
     # ----- 应答编排（answer floor）----------------------------------------------
 
-    def set_floor_config(self, scope: str | None = None, enforcement: str | None = None) -> None:
+    def set_floor_config(self, scope: str | None = None, enforcement: str | None = None,
+                         directed: str | None = None) -> None:
         if scope in ("off", "human", "broadcast"):
             self.floor_scope = scope
         if enforcement in ("soft", "hard"):
             self.floor_enforcement = enforcement
+        if directed in ("all", "recipient", "until_reply"):
+            self.directed_visibility = directed
+
+    def filter_visible(self, msgs: list[dict[str, Any]], agent_id: str, now: float) -> list[dict]:
+        """按 directed_visibility 过滤掉「不该让该 agent 看到的定向消息」。
+
+        仅作用于 meta.to=某 agent 的定向消息；接收者本人、被 @ 点名者、发送者始终可见。msgs 是
+        同一批候选（含本房间更晚的消息），until_reply 据此判断接收者是否已在本批里回复。注意：本
+        方法只用于 agent 侧的 wait/read 投递——GUI 快照/WS 不经过它，人类始终看到全部。
+        """
+        if self.directed_visibility == "all":
+            return msgs
+        # until_reply：预计算每房间各发送者的最晚发言 ts，用于判断接收者是否已回复（避免 O(n²)）。
+        last_ts: dict[tuple[Any, Any], float] = {}
+        if self.directed_visibility == "until_reply":
+            for x in msgs:
+                k = (x.get("room_id"), x.get("sender_id"))
+                t = x.get("ts") or 0.0
+                if t > last_ts.get(k, 0.0):
+                    last_ts[k] = t
+        out: list[dict] = []
+        for m in msgs:
+            meta = m.get("meta") or {}
+            to = meta.get("to")
+            if not to:
+                out.append(m)
+                continue
+            if (agent_id == to or agent_id == m.get("sender_id")
+                    or agent_id in (meta.get("mentions") or [])):
+                out.append(m)
+                continue
+            # agent_id 是「非接收者」的其它 agent：
+            if self.directed_visibility == "recipient":
+                continue  # 永不可见
+            # until_reply：接收者已回复（同房间它发过更晚的消息）或已过 TTL → 解禁
+            ts = m.get("ts") or 0.0
+            if last_ts.get((m.get("room_id"), to), 0.0) > ts or (now - ts) > DIRECTED_HOLD_TTL:
+                out.append(m)
+        return out
 
     def _floor(self, room_id: str) -> dict[str, Any]:
         f = self._floors.get(room_id)
@@ -165,7 +215,7 @@ class Hub:
         if (message.meta or {}).get("to"):
             return False
         if message.role == "human":
-            return True  # 人类(GUI 用户)的广播提问
+            return True  # 人类用户的广播提问
         if self.floor_scope == "broadcast" and message.role == "agent":
             # 仅「广播问题」触发（与配置语义一致）：普通 agent 广播（状态同步等）不应重置一轮
             # 正在进行的应答，否则别人随口一句就把在答的那轮冲掉。
@@ -409,10 +459,14 @@ class Hub:
             "server": {
                 "floor_scope": self.floor_scope,
                 "floor_enforcement": self.floor_enforcement,
+                "directed_visibility": self.directed_visibility,
             },
             "floors": {
                 room.id: self.floor_state(room.id) for room in self.store.rooms.values()
             },
+            "todos": [t.model_dump() for t in self.store.all_todos()],
+            "requests": [r.model_dump() for r in self.store.list_requests(status="pending")],
+            "global_todo_editors": self.global_todo_editors(),
         }
 
     # ----- 智能体操作 ---------------------------------------------------------
@@ -445,9 +499,17 @@ class Hub:
         affected = [r for r in self.store.rooms.values() if agent_id in r.agent_ids]
         self.store.remove_agent(agent_id)
         self._kicked.discard(agent_id)  # 否则被回收/重建的同名 id 可能「出生即被踢」
+        self.store.remove_todos_for_scope("agent", agent_id)  # 连同它的私人 todo
+        editors = self.global_todo_editors()
+        if agent_id in editors:
+            await self.set_global_todo_editors([e for e in editors if e != agent_id])
         await self._broadcast_floors(self._drop_from_floors(agent_id))
         await self.broadcast({"type": "agent_removed", "agent_id": agent_id})
         for room in affected:
+            # 被删的若是主持人，清空 host_id
+            if room.host_id == agent_id:
+                room.host_id = ""
+                self.store.upsert_room(room)
             await self.broadcast({"type": "room_updated", "room": room.model_dump()})
 
     # ----- peer 在线状态 ------------------------------------------------------
@@ -503,8 +565,10 @@ class Hub:
 
     # ----- 房间操作 ----------------------------------------------------------
 
-    async def create_room(self, data: RoomCreate) -> Room:
+    async def create_room(self, data: RoomCreate, host_id: str = "") -> Room:
         room = Room(**data.model_dump())
+        # 主持人默认是建群者：显式传入优先，否则取首个成员（create_topic 会把自己列在首位）。
+        room.host_id = host_id or (room.agent_ids[0] if room.agent_ids else "")
         self.store.add_room(room)
         await self.broadcast({"type": "room_added", "room": room.model_dump()})
         return room
@@ -525,6 +589,11 @@ class Hub:
         if not self.store.get_room(room_id):
             return False
         self.store.remove_room(room_id)
+        self.store.remove_todos_for_scope("room", room_id)  # 连同主题 todo
+        for req in self.store.list_requests(room_id, "pending"):  # 关掉遗留的待审批请求
+            req.status = "rejected"
+            req.result = "主题已关闭"
+            self.store.upsert_request(req)
         self._invite_locks.pop(room_id, None)
         self._floors.pop(room_id, None)
         await self.broadcast({"type": "room_removed", "room_id": room_id})
@@ -550,3 +619,141 @@ class Hub:
         self.store.clear_messages(room_id)
         self._floors.pop(room_id, None)  # 清空也重置该房间的应答位
         await self.broadcast({"type": "room_reset", "room_id": room_id})
+
+    # ----- 主持人 / TODO / 受控请求 ---------------------------------------------
+
+    def is_host(self, room_id: str, actor: str) -> bool:
+        """actor（agent_id 或 "human"）对该房间是否有主持权。人类(GUI)始终是管理员。"""
+        if actor == "human":
+            return True
+        room = self.store.get_room(room_id)
+        return bool(room and room.host_id and room.host_id == actor)
+
+    async def set_host(self, room_id: str, host_id: str) -> Room | None:
+        room = self.store.get_room(room_id)
+        if not room:
+            return None
+        room.host_id = host_id
+        self.store.upsert_room(room)
+        await self.broadcast({"type": "room_updated", "room": room.model_dump()})
+        return room
+
+    def global_todo_editors(self) -> list[str]:
+        try:
+            return list(json.loads(self.store.get_kv(GLOBAL_TODO_EDITORS_KEY, "[]")))
+        except (ValueError, TypeError):
+            return []
+
+    async def set_global_todo_editors(self, ids: list[str]) -> list[str]:
+        clean = [i for i in dict.fromkeys(ids) if self.store.get_agent(i)]
+        self.store.set_kv(GLOBAL_TODO_EDITORS_KEY, json.dumps(clean))
+        await self.broadcast({"type": "global_todo_editors", "editors": clean})
+        return clean
+
+    def can_edit_todo(self, actor: str, scope: str, scope_id: str) -> bool:
+        """谁能改某个 todo：自己的 agent todo / 主题 todo 由主持人 / 全局 todo 由人工或被授权者。"""
+        if actor == "human":
+            return True
+        if scope == "agent":
+            return actor == scope_id
+        if scope == "room":
+            return self.is_host(scope_id, actor)
+        if scope == "global":
+            return actor in self.global_todo_editors()
+        return False
+
+    async def add_todo(self, actor: str, scope: str, scope_id: str,
+                       text: str, assignee: str = "") -> Todo:
+        todo = Todo(scope=scope, scope_id=scope_id, text=text.strip(),
+                    created_by=actor, assignee=assignee)
+        self.store.upsert_todo(todo)
+        await self.broadcast({"type": "todo_added", "todo": todo.model_dump()})
+        return todo
+
+    async def update_todo(self, todo_id: str, *, text: str | None = None,
+                          done: bool | None = None, assignee: str | None = None) -> Todo | None:
+        todo = self.store.get_todo(todo_id)
+        if not todo:
+            return None
+        if text is not None:
+            todo.text = text.strip()
+        if done is not None:
+            todo.done = done
+        if assignee is not None:
+            todo.assignee = assignee
+        self.store.upsert_todo(todo)
+        await self.broadcast({"type": "todo_updated", "todo": todo.model_dump()})
+        return todo
+
+    async def remove_todo(self, todo_id: str) -> bool:
+        todo = self.store.get_todo(todo_id)
+        if not todo:
+            return False
+        self.store.remove_todo(todo_id)
+        await self.broadcast({"type": "todo_removed", "todo_id": todo_id,
+                              "scope": todo.scope, "scope_id": todo.scope_id})
+        return True
+
+    async def submit_request(self, req: ActionRequest) -> ActionRequest:
+        self.store.upsert_request(req)
+        await self.broadcast({"type": "request_added", "request": req.model_dump()})
+        return req
+
+    async def resolve_request(self, req_id: str, approver: str,
+                              approve: bool, note: str = "") -> ActionRequest | None:
+        req = self.store.get_request(req_id)
+        if not req or req.status != "pending":
+            return req
+        req.resolved_by = approver
+        req.resolved_ts = time.time()
+        if approve:
+            ok, msg = await self._execute_request(req, approver)
+            req.status = "approved" if ok else "rejected"
+            req.result = msg
+        else:
+            req.status = "rejected"
+            req.result = note or "已拒绝"
+        self.store.upsert_request(req)
+        await self.broadcast({"type": "request_updated", "request": req.model_dump()})
+        return req
+
+    async def _execute_request(self, req: ActionRequest, approver: str) -> tuple[bool, str]:
+        """审批通过后执行受控动作。payload 里的 target 在提交时已由 server 解析为 target_id。"""
+        p = req.payload or {}
+        a = req.action
+        if a == "todo_add":
+            await self.add_todo(req.requested_by, "room", req.room_id,
+                                p.get("text", ""), p.get("assignee", ""))
+            return True, "已添加主题 todo"
+        if a == "todo_update":
+            t = await self.update_todo(p.get("todo_id", ""),
+                                       text=p.get("text"), done=p.get("done"))
+            return (t is not None), ("已更新 todo" if t else "todo 不存在")
+        if a == "todo_remove":
+            ok = await self.remove_todo(p.get("todo_id", ""))
+            return ok, ("已删除 todo" if ok else "todo 不存在")
+        if a == "close":
+            ok = await self.delete_room(req.room_id)
+            return ok, ("已关闭主题" if ok else "主题不存在")
+        target_id = p.get("target_id", "")
+        tname = p.get("target_name", target_id)
+        if not self.store.get_agent(target_id):
+            return False, "目标实例不存在"
+        if a == "kick":
+            await self.kick_peer(target_id)
+            return True, f"已踢出 {tname}"
+        if a == "invite":
+            room = self.store.get_room(req.room_id)
+            if not room:
+                return False, "主题不存在"
+            if target_id in room.agent_ids:
+                return True, f"{tname} 已在主题内"
+            room.agent_ids.append(target_id)
+            await self.update_room(req.room_id, RoomUpdate(agent_ids=room.agent_ids))
+            who = self.store.get_agent(approver)
+            who_name = who.name if who else "主持人"
+            await self.post_message(Message(
+                room_id=req.room_id, sender_id="system", sender_name="system", role="system",
+                content=f"{who_name} 批准邀请，把 {tname} 拉进了本房间。"))
+            return True, f"已邀请 {tname}"
+        return False, "未知动作"

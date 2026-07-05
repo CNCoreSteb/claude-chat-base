@@ -46,3 +46,44 @@ def test_require_agent_exits_without_session(monkeypatch, tmp_path):
     mod = _load(monkeypatch, tmp_path)
     with pytest.raises(SystemExit):
         mod.require_agent({})
+
+
+def _msgs(n, aid="me", mentioned=()):
+    out = []
+    for i in range(n):
+        m = {"id": f"m{i}", "sender_id": "other", "content": "x" * 100, "meta": {}}
+        if i in mentioned:
+            m["meta"] = {"mentions": [aid]}
+        out.append(m)
+    return out
+
+
+def test_render_budget_keeps_mentions_and_caps_count(monkeypatch, tmp_path):
+    mod = _load(monkeypatch, tmp_path)
+    msgs = _msgs(120, mentioned={0})  # m0 最早、却点名你 -> 必须保留
+    shown, omitted = mod.select_rendered(msgs, "me")
+    ids = {m["id"] for m in shown}
+    assert "m0" in ids and "m119" in ids           # 点名的（即便最早）+ 最近的都在
+    assert omitted > 0                              # 确实折叠了较早的
+    assert len(shown) <= mod.MAX_WAIT_MESSAGES + 1  # 非点名受条数上限约束（+1 个点名）
+    assert [m["id"] for m in shown] == [m["id"] for m in msgs if m["id"] in ids]  # 原序
+
+
+def test_render_budget_total_chars_cap(monkeypatch, tmp_path):
+    mod = _load(monkeypatch, tmp_path)
+    # 单条 clen 截到 MAX_MSG_CHARS(2000)；10 条 ≈ 20000 > 16000 预算 -> 必折叠若干条。
+    msgs = [{"id": f"m{i}", "sender_id": "o", "content": "x" * 5000, "meta": {}} for i in range(10)]
+    _shown, omitted = mod.select_rendered(msgs, "me")
+    assert omitted >= 1
+
+
+def test_render_budget_parity_mcp_vs_skill(monkeypatch, tmp_path):
+    skill = _load(monkeypatch, tmp_path)
+    from ccb import mcp_server
+    msgs = _msgs(80, mentioned={2, 50})
+    s_shown, s_om = skill.select_rendered(msgs, "me")
+    m_shown, m_om = mcp_server.select_rendered(msgs, "me")
+    assert [m["id"] for m in s_shown] == [m["id"] for m in m_shown]  # 选出的集合一致
+    assert s_om == m_om
+    assert (skill.MAX_WAIT_MESSAGES, skill.MAX_MSG_CHARS, skill.MAX_WAIT_TOTAL_CHARS) == \
+           (mcp_server.MAX_WAIT_MESSAGES, mcp_server.MAX_MSG_CHARS, mcp_server.MAX_WAIT_TOTAL_CHARS)

@@ -1,15 +1,14 @@
 [project]
 name = "claude-chat-base"
 version = "0.1.0"
-description = "Claude Chat Base（CCB）——跨平台、带 GUI、可观察的智能体群聊系统。"
-readme = "docs/agents/ccb/usage.md"
+description = "Claude Chat Base（CCB）——跨平台、带 GUI、可观察的多仓库 Claude Code 协作群聊系统。"
+readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "Claude Chat Base" }]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "anthropic>=0.40",
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "httpx>=0.27",

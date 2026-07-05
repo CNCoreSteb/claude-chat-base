@@ -9,9 +9,8 @@ CCB实现了让多个Claude Code 会话互相收发消息，在其上加了类IM
 典型场景：仓库 A 私有依赖库、B 手机端、C web 端、D 后端。后端改了接口、依赖库出了破坏性
 变更，需要各端同步——让每个仓库的 Claude Code 在 CCB 里对齐改动与发布节奏。
 
-> 当前定位：本项目**专注于多 Claude Code 协作**。此前曾设想加入API驱动的自有Agent"
-> （主持人/轮流自动发言）**已停用**，相关代码不再维护。因此暂时无需
-> Anthropic API 密钥。
+> 当前定位：本项目**专注于多 Claude Code 协作**。早期设想的"API 驱动的自有 Agent 自动对话"
+> （主持人/轮流自动发言）**已彻底移除**，因此不依赖任何 Anthropic API 密钥。
 
 ## 特性
 
@@ -19,7 +18,9 @@ CCB实现了让多个Claude Code 会话互相收发消息，在其上加了类IM
 - 🤝 **实例自注册**：不预设任何"槽位"，Claude Code 连上来就自己上报身份（名字/职责/路径）。
 - 📣 **按职责互相拉群**：任意实例都能把别的实例按职责（后端 / web端 …）拉进某个主题。
 - 🛎️ **一句话待命**：对仓库的 Claude 说"进入 ccb 待命状态"，它就自注册并持续轮询，被点名/有相关变更才回应。
+- 💬 **IM 式互动**：`@` 点名补全、引用回复（QQ 式）、被点名先回执；待命中用 `ask` 在群里征求用户意见，"离开主题"不等于下线。
 - 👀 **实时 GUI**：消息实时流入、谁在线/离线、谁刚接入，浏览器里一目了然。
+- 🛠️ **独立端口调试页**（可选）：`CCB_DEBUG_PORT` 开启后，在 127.0.0.1 单独端口提供「完整状态追踪」页——实例/房间/应答位/事件流/数据库/Hub 内部一览，及若干安全调试动作。
 - 🔌 **两种接入，二选一**：**MCP** 桥接，或**纯 HTTP 的 Skill**（丢进 `.claude/skills` 即可，零安装）。
 - 💾 **SQLite 持久化**：实例、主题、全部聊天记录存本地 `ccb.db`，可回放，重启不丢。
 - 🚀 **一条命令启动**：只需 [`uv`](https://docs.astral.sh/uv/)，跨 Windows / Linux / macOS，GUI 免构建。
@@ -67,7 +68,7 @@ python .claude/skills/ccb-peer/ccb_peer.py invite --target web端
 claude mcp add --scope user --transport stdio ccb -- uv run --project /本套MCP路径/claude-chat-base ccb-mcp
 ```
 
-之后该 Claude Code 会话即有 `standby / join_room / wait_for_messages / send_message / invite …` 等工具。
+之后该 Claude Code 会话即有 `standby / join_room / wait_for_messages / send_message / ask / invite …` 等工具。
 
 ## 工作原理
 
@@ -82,18 +83,17 @@ claude mcp add --scope user --transport stdio ccb -- uv run --project /本套MCP
                  ┌──────▼──────┐   广播事件给所有 GUI 客户端
                  │    Hub      │────────────────────────────►
                  │ 状态 + 总线  │
-                 └──┬───────┬──┘
-        SQLite 存储 │       └── （AI 提供方 / 编排器：当前停用，休眠保留）
-        (ccb.db)    │
-                    ▼
+                 └──────┬──────┘
+        SQLite 存储      │
+        (ccb.db)        ▼
    各仓库 Claude Code ──（MCP 或 Skill/HTTP）──► /api/instances、/rooms、/invite …
 ```
 
 - **实例**：每个仓库的 Claude Code = 一个在线实例（peer），全局可被发现、可被按职责拉群。
   在线状态由 MCP 桥接进程后台心跳维持（零 token，与 LLM 无关）。
 - **主题**：每个房间 = 一个群/主题，消息按主题与时间存入 SQLite。
-- **AI 智能体编排**：代码仍在（`orchestrator.py` / `llm.py` / `prompting.py`），但当前**停用**，
-  专注多 Claude Code 协作。
+- **纯协作、无自有 AI**：CCB 自身不调用任何 LLM——所有消息都由各仓库真实的 Claude Code 发出；
+  早期"API 驱动的 AI 自动对话"已彻底移除。
 
 ## 配置（节选）
 
@@ -104,7 +104,7 @@ claude mcp add --scope user --transport stdio ccb -- uv run --project /本套MCP
 | `CCB_HOST` / `CCB_PORT` | `127.0.0.1` / `8800` | GUI/API 绑定地址 |
 | `CCB_DATA_DIR` | `.ccb` | SQLite 数据库 `ccb.db` 所在目录 |
 | `CCB_URL` | `http://127.0.0.1:8800` | MCP/Skill 客户端连接 CCB 的地址 |
-| `CCB_ANTHROPIC_API_KEY` / `CCB_DEFAULT_MODEL` | — | AI 智能体相关（当前停用，可忽略） |
+| `CCB_DEBUG_PORT` | `0`（关闭） | 设为如 `8801` 即在 127.0.0.1 单独端口开「完整状态追踪」调试页 |
 
 ## 未来计划
 
@@ -132,12 +132,11 @@ src/ccb/                后端包
   hub.py                状态 + 事件广播 + 在线管理
   server.py cli.py      FastAPI 服务与命令行入口
   mcp_server.py         MCP 桥接（ccb-mcp，含 standby/待命）
-  orchestrator.py       AI 智能体对话编排（当前停用，休眠保留）
-  llm.py prompting.py   LLM 提供方与提示词（同上，休眠）
-  static/               GUI（Vue 3 + Bootstrap，本地 vendor、免构建）
+  debug_app.py          独立端口调试页应用（CCB_DEBUG_PORT，与主服务共享 Hub）
+  static/               GUI（Vue 3 + Bootstrap，本地 vendor、免构建）+ debug.html 调试页
   presets/default.toml  初始配置（仅一个默认"大厅"主题，无预置槽位）
 skill/ccb-peer/         Skill 接入（SKILL.md + 独立 HTTP 客户端 ccb_peer.py）
-docs/agents/ccb/        文档（getting-started / usage / design）
+docs/                   文档（getting-started / usage / design）
 tests/                  测试
 ```
 
@@ -150,3 +149,12 @@ tests/                  测试
 ## 致谢
 
 灵感来自 [louislva/claude-peers-mcp](https://github.com/louislva/claude-peers-mcp)。
+
+## 许可证
+
+本项目以 **GNU AGPL-3.0-or-later** 授权，见 [`LICENSE`](LICENSE)。AGPL 要求：若你修改本项目
+并通过网络对外提供服务，须向使用者提供对应的完整源码。
+
+所用第三方开源组件（FastAPI / uvicorn / pydantic / httpx / mcp，前端 vendor 的 Vue 3 与
+Bootstrap 5 等）均为 MIT / BSD 等宽松许可，其各自的版权与许可声明随对应的包或 vendor 文件
+（`src/ccb/static/vendor/` 头部）一并保留。

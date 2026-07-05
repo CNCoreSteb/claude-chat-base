@@ -6,15 +6,6 @@ const PALETTE = [
   "#6366f1", "#ec4899", "#10b981", "#f59e0b", "#06b6d4",
   "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#3b82f6",
 ];
-// —— 以下为 AI 智能体相关选项；AI 自动对话已暂时停用，本项目当前专注于多 Claude Code 协作。——
-// const STRATEGY_OPTIONS = [
-//   { label: "主持人（由模型挑选发言者）", value: "director" },
-//   { label: "轮流发言", value: "round_robin" },
-// ];
-// const KIND_OPTIONS = [
-//   { label: "仓库 peer（接入真实 Claude Code）", value: "peer" },
-//   { label: "AI 智能体（API 自动发言）", value: "ai" },
-// ];
 
 createApp({
   data() {
@@ -22,10 +13,12 @@ createApp({
       agents: {},        // id -> 智能体
       rooms: {},         // id -> 主题
       messages: {},      // room_id -> [消息]
+      floors: {},        // room_id -> 应答位状态 { holder, holder_name, queue, queue_names, active, ... }
       server: {},
       currentRoomId: null,
       draft: "",
       stick: true,       // 是否贴着底部（决定流式时是否自动滚动）
+      unread: 0,         // 滚上去看历史时，期间到达的新消息条数（悬浮"回到最新"箭头上显示）
       toastMsg: "",
       palette: PALETTE,
       // 主题：用预绘制脚本已写入的 data-bs-theme 作为初值，保证切换按钮图标与实际主题一致。
@@ -35,6 +28,19 @@ createApp({
       reconnectTimer: null,
       wasConnected: false,
       modal: { title: "", fields: [], values: {}, onSave: null },
+      // @提及自动补全：open 是否显示、items 候选、index 高亮项、start 输入框里 @ 的下标。
+      mention: { open: false, items: [], index: 0, start: -1 },
+      // 正在回复的目标消息（QQ 式引用）：{ id, sender_name, preview }，null 表示不引用。
+      replyTo: null,
+      // 经 @ 自动补全**明确选中**的参与者：[{ id, name }]。发送时按 agentid 显式带给服务端，
+      // 让"这条主要发给谁"不再只靠正文文本解析（重名/措辞都不怕）。
+      pickedMentions: [],
+      // 三级 TODO（全局/主题/各 agent）、受控请求队列、全局 todo 被授权的 agentid。
+      todos: [],
+      requests: [],
+      globalEditors: [],
+      newTodo: { global: "", room: "" },   // 两个输入框的草稿
+      pua: {},                              // 各主题的 PUA 状态机快照（room_id -> snapshot）
     };
   },
 
@@ -42,6 +48,44 @@ createApp({
     roomList() { return Object.values(this.rooms); },
     currentRoom() { return this.rooms[this.currentRoomId] || null; },
     currentMessages() { return this.messages[this.currentRoomId] || []; },
+    // 是否显示"回到最新"悬浮箭头：当前主题有消息、且用户已滚上去（未贴底）时显示。
+    showJumpLatest() { return !this.stick && this.currentMessages.length > 0; },
+    // 当前主题的应答位状态（应答编排）；active 时才在头部显示"谁正在回答/排队"。
+    currentFloor() { return this.floors[this.currentRoomId] || null; },
+    // 三级 TODO 视图。
+    globalTodos() { return this.todos.filter((t) => t.scope === "global"); },
+    currentRoomTodos() {
+      return this.todos.filter((t) => t.scope === "room" && t.scope_id === this.currentRoomId);
+    },
+    // 当前主题待审批的受控请求（主持人/你可批/拒）。
+    currentRoomRequests() {
+      return this.requests.filter((r) => r.room_id === this.currentRoomId && r.status === "pending");
+    },
+    currentHost() {
+      const r = this.currentRoom;
+      return r && r.host_id ? (this.agents[r.host_id] || null) : null;
+    },
+    // 当前主题的 PUA 状态（active 时在头部显示阶段/进度/倒计时）。
+    currentPua() { return this.pua[this.currentRoomId] || null; },
+    floorScopeLabel() {
+      return ({ off: "关闭", human: "仅我的提问", broadcast: "所有广播问题" })[this.server.floor_scope]
+        || this.server.floor_scope;
+    },
+    directedLabel() {
+      return ({ all: "全部可见", recipient: "仅接收者可见", until_reply: "回复后解禁" })[
+        this.server.directed_visibility] || this.server.directed_visibility;
+    },
+    // 被视为"已回复"的提问 id 集合：仅当**用户（human）引用回复了这条提问本身**才算。
+    // 不再用"提问之后出现过任何人类发言"来判断——否则用户引用回复其它消息、或发别的与
+    // 该提问无关的消息时，会把尚未回答的提问误标为"已回复"。要标记某条提问为已回复，
+    // 在 GUI 里对它点"↩ 回复"作答即可。
+    answeredQuestionIds() {
+      const s = new Set();
+      for (const m of this.currentMessages) {
+        if (m.role === "human" && m.meta && m.meta.reply_to) s.add(m.meta.reply_to);
+      }
+      return s;
+    },
     roomAgents() {
       const r = this.currentRoom;
       return r ? r.agent_ids.map((id) => this.agents[id]).filter(Boolean) : [];
@@ -67,22 +111,23 @@ createApp({
     fmtTime(ts) {
       return new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
     },
-    statusText(s) { return { idle: "空闲", running: "进行中", paused: "已暂停" }[s] || s; },
+    escapeHtml(s) {
+      const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+      return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => map[c]);
+    },
+    // 先转义再高亮 @点名。用 Unicode 属性（\p{L}\p{N}）对齐服务端 Python 的 `@([\w-]+)`
+    // （Python \w 是 Unicode 感知的），从而日/韩/带重音等非 CJK 名字也能正确高亮，不再与服务端解析口径不一致。
+    renderContent(text) {
+      return this.escapeHtml(text).replace(
+        /@([\p{L}\p{N}_-]+)/gu, '<span class="mention">@$1</span>',
+      );
+    },
     statusLabel(a) {
-      if (a.kind === "peer") {
-        return (a.role ? a.role + " · " : "") + (a.online ? "在线" : "离线（等待 Claude Code 接入）");
-      }
-      if (!a.enabled) return "已静音";
-      if (a.status === "thinking") return "思考中…";
-      if (a.status === "speaking") return "发言中…";
-      return "空闲";
+      return (a.role ? a.role + " · " : "")
+        + (a.online ? "在线" : "离线（等待 Claude Code 接入）");
     },
     statusClass(a) {
-      if (a.kind !== "peer") {
-        if (a.status === "thinking") return "text-warning";
-        if (a.status === "speaking") return "text-success";
-      }
-      return "text-secondary";
+      return a.online ? "text-success" : "text-secondary";
     },
 
     // ----- 网络 -----
@@ -102,7 +147,12 @@ createApp({
     connect() {
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const ws = new WebSocket(`${proto}://${location.host}/ws`);
-      ws.onmessage = (e) => this.handleEvent(JSON.parse(e.data));
+      ws.onmessage = (e) => {
+        // 守卫畸形帧：解析失败时忽略这一帧，别让异常打断 onmessage、丢掉后续事件。
+        let ev;
+        try { ev = JSON.parse(e.data); } catch { return; }
+        this.handleEvent(ev);
+      };
       ws.onopen = () => {
         this.reconnectDelay = 1200;
         if (this.wasConnected) this.toast("已重连");
@@ -128,94 +178,288 @@ createApp({
         case "agent_added":
         case "agent_updated": this.agents[ev.agent.id] = ev.agent; break;
         case "agent_removed": delete this.agents[ev.agent_id]; break;
-        case "agent_status": { const a = this.agents[ev.agent_id]; if (a) a.status = ev.status; break; }
         case "room_added":
         case "room_updated":
           this.rooms[ev.room.id] = ev.room;
           if (!this.currentRoomId) this.selectRoom(ev.room.id);
           break;
-        case "room_status": { const r = this.rooms[ev.room_id]; if (r) { r.status = ev.status; r.turn = ev.turn; } break; }
         case "room_reset": this.messages[ev.room_id] = []; break;
-        case "message": this.addMessage(ev.message, false); break;
-        case "message_start": this.addMessage(ev.message, true); break;
-        case "message_delta": this.appendDelta(ev.message_id, ev.delta); break;
-        case "message_end": this.endMessage(ev.message); break;
+        case "answer_floor": this.floors[ev.room_id] = ev.floor; break;
+        case "floor_config":
+          this.server = { ...this.server, floor_scope: ev.scope, floor_enforcement: ev.enforcement,
+            directed_visibility: ev.directed_visibility };
+          break;
+        case "room_removed": {
+          const wasActive = this.currentRoomId === ev.room_id;
+          delete this.rooms[ev.room_id];
+          delete this.messages[ev.room_id];
+          delete this.floors[ev.room_id];
+          if (wasActive) {
+            const next = Object.keys(this.rooms)[0] || null;
+            // 复用 selectRoom 做完整重置（replyTo/pickedMentions/stick/unread/滚动）；无主题时手动清空。
+            if (next) this.selectRoom(next);
+            else { this.currentRoomId = null; this.replyTo = null;
+              this.pickedMentions = []; this.closeMention(); }
+          }
+          break;
+        }
+        case "message": this.addMessage(ev.message); break;
+        case "todo_added": this.todos.push(ev.todo); break;
+        case "todo_updated": {
+          const i = this.todos.findIndex((t) => t.id === ev.todo.id);
+          if (i >= 0) this.todos.splice(i, 1, ev.todo); else this.todos.push(ev.todo);
+          break;
+        }
+        case "todo_removed":
+          this.todos = this.todos.filter((t) => t.id !== ev.todo_id); break;
+        case "request_added": this.requests.push(ev.request); break;
+        case "request_updated": {
+          const i = this.requests.findIndex((r) => r.id === ev.request.id);
+          if (i >= 0) this.requests.splice(i, 1, ev.request); else this.requests.push(ev.request);
+          break;
+        }
+        case "global_todo_editors": this.globalEditors = ev.editors || []; break;
+        case "pua":
+          if (ev.pua) this.pua[ev.room_id] = ev.pua; else delete this.pua[ev.room_id];
+          break;
       }
     },
     applySnapshot(snap) {
       this.agents = Object.fromEntries(snap.agents.map((a) => [a.id, a]));
       this.rooms = Object.fromEntries(snap.rooms.map((r) => [r.id, r]));
       this.messages = snap.messages || {};
+      this.floors = snap.floors || {};
       this.server = snap.server || {};
+      this.todos = snap.todos || [];
+      this.requests = snap.requests || [];
+      this.globalEditors = snap.global_todo_editors || [];
+      this.pua = snap.pua || {};
       if (!this.currentRoomId || !this.rooms[this.currentRoomId]) {
         this.currentRoomId = snap.rooms[0]?.id || null;
       }
       this.stick = true;
-      this.$nextTick(() => this.scrollToBottom());
+      this.unread = 0;
+      // 加载后直接停在最新一条。
+      this.scrollToLatestSoon();
     },
 
     // ----- 消息 -----
-    addMessage(msg, streaming) {
-      const m = { ...msg, streaming: !!streaming };
+    addMessage(msg) {
+      const m = { ...msg };
       if (!this.messages[m.room_id]) this.messages[m.room_id] = [];
-      this.messages[m.room_id].push(m);
-      if (m.room_id === this.currentRoomId && this.stick) this.$nextTick(() => this.scrollToBottom());
-    },
-    appendDelta(id, delta) {
-      for (const list of Object.values(this.messages)) {
-        const m = list.find((x) => x.id === id);
-        if (m) { m.content += delta; break; }
-      }
-      if (this.stick) this.$nextTick(() => this.scrollToBottom());
-    },
-    endMessage(msg) {
-      const list = this.messages[msg.room_id];
-      if (list) {
-        const m = list.find((x) => x.id === msg.id);
-        if (m) { Object.assign(m, msg); m.streaming = false; }
-      }
-      // 流式收尾时高度可能变化；若仍贴底则补一次精确滚动（取代已移除的全局 updated 钩子）。
-      if (msg.room_id === this.currentRoomId && this.stick) {
-        this.$nextTick(() => this.scrollToBottom());
+      const list = this.messages[m.room_id];
+      list.push(m);
+      // 限制单主题在内存里保留的消息数，避免长会话无界增长（历史仍在服务端，刷新即重新快照）。
+      if (list.length > 2000) list.splice(0, list.length - 2000);
+      if (m.room_id === this.currentRoomId) {
+        if (this.stick) this.$nextTick(() => this.scrollToBottom());
+        else this.unread++;   // 用户正在上面看历史：累计未读，悬浮箭头上提示
       }
     },
     onScroll() {
       const t = this.$refs.transcript;
-      if (t) this.stick = t.scrollHeight - t.scrollTop - t.clientHeight < 120;
+      if (!t) return;
+      this.stick = t.scrollHeight - t.scrollTop - t.clientHeight < 120;
+      if (this.stick) this.unread = 0;   // 已贴底：清掉"期间新消息"计数
     },
     scrollToBottom() {
       const t = this.$refs.transcript;
       // 用 behavior:auto 瞬时贴底——流式高频更新时若用 smooth 会持续追不上底部而抖动。
       if (t) t.scrollTo({ top: t.scrollHeight, behavior: "auto" });
+      this.stick = true;
+      this.unread = 0;
+    },
+    // 加载/切换主题后稳妥地停在最新一条：DOM 更新后滚一次，再在下一帧补一次——防止字体/
+    // 布局尚未稳定导致首次 scrollHeight 偏小而没真正贴到底。
+    scrollToLatestSoon() {
+      this.$nextTick(() => {
+        this.scrollToBottom();
+        requestAnimationFrame(() => this.scrollToBottom());
+      });
+    },
+    // 点悬浮箭头：平滑回到最新消息。
+    jumpToLatest() {
+      this.stick = true;
+      this.unread = 0;
+      const t = this.$refs.transcript;
+      if (t) t.scrollTo({ top: t.scrollHeight, behavior: "smooth" });
     },
 
     // ----- 主题 -----
     selectRoom(id) {
       this.currentRoomId = id;
+      this.replyTo = null;            // 切主题：清掉上个主题里选中的回复目标
+      this.pickedMentions = [];       // 以及上个主题里选中的 @ 接收者
+      this.closeMention();
       this.stick = true;
-      // 切换主题时用平滑滚动（仅此一处），保留切换的顺滑观感。
-      this.$nextTick(() => {
-        const t = this.$refs.transcript;
-        if (t) t.scrollTo({ top: t.scrollHeight, behavior: "smooth" });
-      });
+      this.unread = 0;
+      // 切主题直接停在最新一条（稳妥贴底）。
+      this.scrollToLatestSoon();
     },
     async roomAction(action) {
       if (this.currentRoom) await this.api("POST", `/api/rooms/${this.currentRoom.id}/${action}`);
+    },
+    // 应答编排配置（scope: off/human/broadcast，enforcement: soft/hard）。
+    setFloorConfig(patch) { this.api("PATCH", "/api/answer-floor", patch).catch(() => {}); },
+
+    // ----- TODO / 主持人 / 受控请求（GUI 即人工管理员，actor=human）-----
+    async addTodo(scope, scopeId) {
+      const text = (this.newTodo[scope] || "").trim();
+      if (!text) return;
+      await this.api("POST", "/api/todos",
+        { scope, scope_id: scopeId || "", text, actor: "human" }).catch(() => {});
+      this.newTodo[scope] = "";
+    },
+    toggleTodo(t) {
+      this.api("PATCH", `/api/todos/${t.id}`, { done: !t.done, actor: "human" }).catch(() => {});
+    },
+    removeTodo(id) { this.api("DELETE", `/api/todos/${id}?actor=human`).catch(() => {}); },
+    agentName(id) { return this.agents[id]?.name || (id === "human" ? "你" : id); },
+    setHost(hostId) {
+      if (!this.currentRoom) return;
+      this.api("PATCH", `/api/rooms/${this.currentRoomId}/host`, { host_id: hostId }).catch(() => {});
+    },
+    resolveRequest(id, approve) {
+      this.api("POST", `/api/requests/${id}/resolve`, { approver: "human", approve }).catch(() => {});
+    },
+    requestSummary(r) {
+      const p = r.payload || {};
+      const tgt = p.target_name || p.text || p.todo_id || "";
+      return `${r.requested_by_name || r.requested_by} 请求 ${r.action} ${tgt}`;
+    },
+    grantGlobalEditor(id) {
+      if (!id || this.globalEditors.includes(id)) return;
+      this.api("PATCH", "/api/global-todo-editors",
+        { editors: [...this.globalEditors, id] }).catch(() => {});
+    },
+    revokeGlobalEditor(id) {
+      this.api("PATCH", "/api/global-todo-editors",
+        { editors: this.globalEditors.filter((e) => e !== id) }).catch(() => {});
+    },
+    // PUA 模式（强制多阶段协同）：开/关当前主题。
+    togglePua() {
+      if (!this.currentRoom) return;
+      const on = !this.currentPua;
+      if (on && !confirm("对本主题开启 PUA 模式？\n会强制各实例先逐一上报，再按 todo 轮流质疑/审查迭代。"))
+        return;
+      this.api("POST", `/api/rooms/${this.currentRoomId}/pua`, { enabled: on, window: 60 })
+        .catch(() => {});
+    },
+    puaPhaseLabel(p) {
+      return { onboarding: "上报中", critique: "质疑中", review: "审查中", done: "已完成" }[p] || p;
+    },
+    openSettings() {
+      this._settingsOpener = document.activeElement;   // 关闭后把焦点还回触发按钮
+      this.bsSettings.show();
+    },
+    deleteRoom(room) {
+      if (!room) return;
+      if (confirm(`删除主题「${room.name}」？该主题的全部消息也会一并删除，且不可恢复。`)) {
+        this.api("DELETE", `/api/rooms/${room.id}`).catch(() => {});
+      }
     },
 
     // ----- 输入框 -----
     sendMessage() {
       const text = this.draft.trim();
       if (!text || !this.currentRoomId) return;
-      this.api("POST", `/api/rooms/${this.currentRoomId}/messages`, { content: text }).catch(() => {});
+      const body = { content: text };
+      if (this.replyTo) body.reply_to = this.replyTo.id;
+      // 仅保留 @名字仍在正文里的选中项，按 agentid 显式带给服务端；首个作为"主要接收者"(to)。
+      const picked = this.pickedMentions.filter((p) => text.includes("@" + p.name));
+      if (picked.length) {
+        body.mentions = picked.map((p) => p.id);
+        body.to = picked[0].id;
+      }
+      this.api("POST", `/api/rooms/${this.currentRoomId}/messages`, body).catch(() => {});
       this.draft = "";
+      this.replyTo = null;
+      this.pickedMentions = [];
       const el = this.$refs.composer;
       if (el) el.style.height = "auto";
     },
+    // ----- 回复指定消息（QQ 式引用）-----
+    startReply(m) {
+      if (!m || m.role === "system") return;   // 系统提示不可回复
+      this.replyTo = {
+        id: m.id,
+        sender_name: m.sender_name,
+        preview: (m.content || "").replace(/\s+/g, " ").slice(0, 80),
+      };
+      this.$nextTick(() => this.$refs.composer?.focus());
+    },
+    cancelReply() { this.replyTo = null; },
     autoGrow(e) {
       const el = e.target;
       el.style.height = "auto";
       el.style.height = Math.min(el.scrollHeight, 140) + "px";
+    },
+
+    // ----- @提及自动补全（模仿 IM）-----
+    onComposerInput(e) {
+      this.autoGrow(e);
+      // 中文输入法拼音组字途中先不弹菜单，避免回车确认候选时误触发选择。
+      if (e.isComposing) return;
+      this.updateMention(e.target);
+    },
+    onComposerKeydown(e) {
+      if (e.isComposing) return;                    // 组字中的回车交给输入法
+      if (this.mention.open) {
+        if (e.key === "ArrowDown") { e.preventDefault(); return this.moveMention(1); }
+        if (e.key === "ArrowUp") { e.preventDefault(); return this.moveMention(-1); }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          return this.applyMention(this.mention.items[this.mention.index]);
+        }
+        if (e.key === "Escape") { e.preventDefault(); return this.closeMention(); }
+      }
+      // 回车发送，Shift/Ctrl/Alt/Meta + 回车则换行（等价于原 .enter.exact）。
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        this.sendMessage();
+      }
+    },
+    onComposerBlur() { this.closeMention(); },
+    updateMention(el) {
+      const pos = el.selectionStart;
+      // 直接读 el.value（v-model 更新 draft 可能慢一拍）。光标前文本里，最近一个
+      // 「行首或空白后的 @」到光标之间若无空白，即正在输入提及。
+      const m = /(?:^|\s)@([^\s@]*)$/.exec(el.value.slice(0, pos));
+      if (!m) return this.closeMention();
+      const query = m[1].toLowerCase();
+      const items = this.roomAgents
+        .filter((a) => a.name.toLowerCase().includes(query) || (a.role || "").toLowerCase().includes(query))
+        .slice(0, 8);
+      if (!items.length) return this.closeMention();
+      this.mention = { open: true, items, index: 0, start: pos - m[1].length - 1 };
+    },
+    moveMention(d) {
+      const n = this.mention.items.length;
+      if (n) this.mention.index = (this.mention.index + d + n) % n;
+    },
+    applyMention(agent) {
+      if (!this.mention.open || !agent) return;
+      const el = this.$refs.composer;
+      const pos = el ? el.selectionStart : this.draft.length;
+      const before = this.draft.slice(0, this.mention.start);
+      const insert = `@${agent.name} `;
+      this.draft = before + insert + this.draft.slice(pos);
+      // 记下这次明确选中的 agentid，发送时作为显式接收者约束（首个即"主要发给谁"）。
+      if (!this.pickedMentions.some((p) => p.id === agent.id)) {
+        this.pickedMentions.push({ id: agent.id, name: agent.name });
+      }
+      this.closeMention();
+      this.$nextTick(() => {
+        if (!el) return;
+        const caret = (before + insert).length;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        el.style.height = "auto";
+        el.style.height = Math.min(el.scrollHeight, 140) + "px";
+      });
+    },
+    closeMention() {
+      this.mention = { open: false, items: [], index: 0, start: -1 };
     },
 
     // ----- 参与者 -----
@@ -296,7 +540,7 @@ createApp({
       ], (v) => this.api("PATCH", `/api/rooms/${room.id}`, { name: v.name, topic: v.topic }));
     },
     newAgent() {
-      // 当前只新增「仓库 peer」槽位（AI 智能体已停用）。
+      // 每个参与者都是一个外部 Claude Code 实例（仓库 peer 槽位）。
       this.openModal("新增参与者", [
         { key: "name", label: "名称", value: "" },
         { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: "" },
@@ -312,7 +556,6 @@ createApp({
       });
     },
     editAgent(a) {
-      // AI 自动对话停用：不再编辑 温度（仅 AI 智能体相关）。
       this.openModal("编辑参与者", [
         { key: "name", label: "名称", value: a.name },
         { key: "role", label: "仓库角色（如 后端 / web端，可选）", value: a.role || "" },
@@ -341,6 +584,8 @@ createApp({
 
   mounted() {
     this.bsModal = new bootstrap.Modal(this.$refs.modal);
+    this.bsSettings = new bootstrap.Modal(this.$refs.settingsModal);
+    this.$refs.settingsModal.addEventListener("hidden.bs.modal", () => this._settingsOpener?.focus());
     this.bsToast = new bootstrap.Toast(this.$refs.toast, { delay: 2600 });
     // 弹窗关闭后把焦点还给触发按钮；打开后自动聚焦首个表单控件（焦点捕获由 Bootstrap 负责）。
     this.$refs.modal.addEventListener("hidden.bs.modal", () => this._modalOpener?.focus());

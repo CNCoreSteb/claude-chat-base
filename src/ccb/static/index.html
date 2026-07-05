@@ -33,9 +33,13 @@
           <div class="fw-bold">Claude Chat Base</div>
           <div class="text-secondary small text-uppercase" style="letter-spacing:2px">智能体群聊</div>
         </div>
-        <button class="btn btn-sm btn-outline-secondary ms-auto" @click="toggleTheme"
-                :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
-                :title="theme === 'dark' ? '浅色模式' : '深色模式'">{{ theme === 'dark' ? '☀️' : '🌙' }}</button>
+        <div class="ms-auto d-flex gap-1">
+          <button class="btn btn-sm btn-outline-secondary" @click="openSettings"
+                  aria-label="设置" title="设置">⚙</button>
+          <button class="btn btn-sm btn-outline-secondary" @click="toggleTheme"
+                  :aria-label="theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'"
+                  :title="theme === 'dark' ? '浅色模式' : '深色模式'">{{ theme === 'dark' ? '☀️' : '🌙' }}</button>
+        </div>
       </div>
 
       <div class="pane-head">
@@ -48,10 +52,14 @@
             :class="{ active: r.id === currentRoomId }" role="button" tabindex="0"
             :aria-current="r.id === currentRoomId ? 'true' : null" @click="selectRoom(r.id)"
             @keydown.enter.prevent="selectRoom(r.id)" @keydown.space.prevent="selectRoom(r.id)">
-          <div class="fw-semibold">{{ r.name }}</div>
-          <div class="small text-secondary d-flex align-items-center gap-2">
-            <span class="dot" :class="r.status" aria-hidden="true"></span>
-            <span>{{ statusText(r.status) }} · {{ r.agent_ids.length }} 名成员</span>
+          <div class="d-flex align-items-center gap-2">
+            <div class="fw-semibold flex-grow-1 text-truncate">{{ r.name }}</div>
+            <button class="btn btn-sm btn-link p-0 px-1 text-secondary room-del"
+                    :aria-label="'删除主题 ' + r.name" title="删除主题（含全部消息）"
+                    @click.stop="deleteRoom(r)" @keydown.enter.stop>✕</button>
+          </div>
+          <div class="small d-flex align-items-center gap-2 opacity-75">
+            <span>{{ r.agent_ids.length }} 名成员</span>
           </div>
         </li>
       </ul>
@@ -84,12 +92,18 @@
       </ul>
 
       <div class="server-card small text-secondary mt-auto m-3 p-3 border rounded">
-        <div>多 Claude Code 协作 · 本地运行</div>
+        <div class="d-flex align-items-center">
+          <span>多 Claude Code 协作 · 本地运行</span>
+          <button class="btn btn-sm btn-link p-0 ms-auto text-secondary"
+                  @click="openSettings" title="设置" aria-label="设置">⚙ 设置</button>
+        </div>
         <div>数据持久化于 <span class="font-monospace">.ccb/ccb.db</span></div>
-        <!-- AI 自动对话停用：隐藏 提供方/模型/API Key 提示
-        <div>提供方 <span class="badge">{{ server.provider }}</span></div>
-        <div>模型：{{ server.default_model }}</div>
-        -->
+        <div v-if="server.floor_scope && server.floor_scope !== 'off'">
+          应答编排：{{ floorScopeLabel }} · {{ server.floor_enforcement === 'hard' ? '硬·拦截' : '软·提示' }}
+        </div>
+        <div v-if="server.directed_visibility && server.directed_visibility !== 'all'">
+          定向可见性：{{ directedLabel }}
+        </div>
       </div>
     </aside>
 
@@ -101,43 +115,121 @@
           <p class="text-secondary small mb-0">{{ currentRoom ? currentRoom.topic : '' }}</p>
         </div>
         <div v-if="currentRoom" class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
-          <!-- AI 自动对话已暂时停用：本项目当前专注于多 Claude Code 协作，故隐藏 轮数/开始/暂停/停止。
-          <span class="text-secondary small font-monospace">第 {{ currentRoom.turn }}/{{ currentRoom.max_turns }} 轮</span>
-          <button v-if="currentRoom.status !== 'running'" class="btn btn-sm btn-primary"
-                  @click="roomAction('start')">{{ currentRoom.status === 'paused' ? '继续' : '开始' }}</button>
-          <button v-else class="btn btn-sm btn-outline-light" @click="roomAction('pause')">暂停</button>
-          <button v-if="currentRoom.status !== 'idle'" class="btn btn-sm btn-outline-secondary" @click="roomAction('stop')">停止</button>
-          -->
+          <span class="small text-secondary d-flex align-items-center gap-1" title="主持人（人工可改派）">
+            🛡 主持人
+            <select class="form-select form-select-sm" style="width:auto;display:inline-block"
+                    :value="currentRoom.host_id || ''" @change="setHost($event.target.value)">
+              <option value="">（无）</option>
+              <option v-for="id in currentRoom.agent_ids" :key="id" :value="id">{{ agentName(id) }}</option>
+            </select>
+          </span>
+          <button class="btn btn-sm" :class="currentPua ? 'btn-warning' : 'btn-outline-warning'"
+                  @click="togglePua" :title="currentPua ? '关闭 PUA 模式' : '开启 PUA 强制协同'">
+            PUA<span v-if="currentPua">·开</span>
+          </button>
           <button class="btn btn-sm btn-outline-danger" @click="roomAction('reset')" title="清空本主题消息">清空</button>
           <button class="btn btn-sm btn-outline-secondary" @click="editRoom(currentRoom)">编辑</button>
         </div>
       </header>
 
-      <div class="transcript flex-grow-1 overflow-auto p-4" ref="transcript" @scroll="onScroll">
+      <!-- PUA 模式横幅：显示当前阶段/进度/倒计时，让你看见强制协同的流程 -->
+      <div v-if="currentPua" class="px-4 py-2 border-bottom small d-flex align-items-center gap-2 flex-wrap"
+           style="background:var(--bs-warning-bg-subtle)">
+        <strong>🎭 PUA · {{ puaPhaseLabel(currentPua.phase) }}</strong>
+        <span class="text-secondary">{{ currentPua.progress }}</span>
+        <span v-if="currentPua.seconds_to_advance != null" class="badge text-bg-secondary">
+          倒计时 {{ Math.ceil(currentPua.seconds_to_advance) }}s</span>
+        <span v-if="currentPua.refresh" class="text-danger">· 等新成员补报…</span>
+        <button class="btn btn-sm btn-outline-secondary py-0 px-2 ms-auto" @click="togglePua">关闭 PUA</button>
+      </div>
+
+      <!-- 待审批的受控请求（你=人工管理员，可批准/拒绝；主持人 agent 也能在自己侧审批）-->
+      <div v-if="currentRoomRequests.length" class="px-4 py-2 border-bottom"
+           style="background:var(--bs-warning-bg-subtle)">
+        <div class="small fw-semibold mb-1">⚖ 待审批请求（{{ currentRoomRequests.length }}）</div>
+        <div v-for="r in currentRoomRequests" :key="r.id"
+             class="d-flex align-items-center gap-2 small mb-1">
+          <span class="flex-grow-1">{{ requestSummary(r) }}<span v-if="r.reason"
+            class="text-secondary">（{{ r.reason }}）</span></span>
+          <button class="btn btn-sm btn-success py-0 px-2" @click="resolveRequest(r.id, true)">批准</button>
+          <button class="btn btn-sm btn-outline-secondary py-0 px-2"
+                  @click="resolveRequest(r.id, false)">拒绝</button>
+        </div>
+      </div>
+
+      <!-- 应答位横幅：本轮有人在答/待答时显示，让你看见编排过程 -->
+      <div v-if="currentFloor && currentFloor.active" class="floor-bar small px-4 py-1" role="status">
+        <template v-if="currentFloor.holder">🖊 <strong>{{ currentFloor.holder_name }}</strong> 正在回答本轮问题…</template>
+        <template v-else>❓ 本轮问题待应答…</template>
+        <span v-if="currentFloor.queue_names && currentFloor.queue_names.length">
+          · 排队：{{ currentFloor.queue_names.join('、') }}</span>
+      </div>
+
+      <div class="transcript-wrap flex-grow-1 position-relative" style="min-height:0">
+        <div class="transcript h-100 overflow-auto p-4" ref="transcript" @scroll="onScroll">
         <div v-if="!currentMessages.length" class="empty-state text-center text-secondary">
           <div style="font-size:42px">💬</div>
           <p>各仓库的 Claude Code 接入后，协作消息会实时显示在这里。<br>你也可以在下方以人类身份直接插话。</p>
         </div>
-        <div v-for="m in currentMessages" :key="m.id" class="msg" :class="['msg--' + m.role, { streaming: m.streaming }]">
+        <div v-for="m in currentMessages" :key="m.id" class="msg"
+             :class="['msg--' + m.role, { 'msg--question': m.meta && m.meta.is_question && !answeredQuestionIds.has(m.id) }]">
           <div v-if="m.role === 'system'" class="msg-system mx-auto">{{ m.content }}</div>
           <template v-else>
             <div class="avatar" :style="{ background: m.color || 'var(--bs-secondary-bg)' }">{{ initials(m.sender_name) }}</div>
-            <div class="msg-body min-w-0">
+            <div class="msg-body min-w-0" @contextmenu.prevent="startReply(m)">
               <div class="msg-head d-flex align-items-baseline gap-2">
                 <span class="fw-semibold" :style="{ color: m.color || 'var(--bs-body-color)' }">{{ m.sender_name }}</span>
-                <span v-if="m.meta && m.meta.model" class="small text-secondary font-monospace">{{ m.meta.model }}</span>
+                <span v-if="m.meta && m.meta.to && agents[m.meta.to]" class="small fw-semibold mention-to"
+                      :style="{ color: agents[m.meta.to].color || 'var(--bs-primary)' }"
+                      :title="'主要发给 ' + agents[m.meta.to].name">→ @{{ agents[m.meta.to].name }}</span>
+                <span v-if="m.meta && m.meta.is_question" class="badge"
+                      :class="answeredQuestionIds.has(m.id) ? 'text-bg-success' : 'text-bg-warning'">
+                  {{ answeredQuestionIds.has(m.id) ? '✅ 已回复' : '❓ 等你回答' }}
+                </span>
                 <span class="small text-secondary">{{ fmtTime(m.ts) }}</span>
+                <button class="msg-reply-btn btn btn-link btn-sm p-0 ms-auto text-secondary"
+                        title="回复这条" :aria-label="'回复 ' + m.sender_name" @click="startReply(m)">↩ 回复</button>
               </div>
-              <div class="msg-text">{{ m.content }}<span v-if="m.streaming" class="stream-cursor"></span></div>
+              <div v-if="m.meta && m.meta.reply_to_sender" class="msg-quote">
+                <span class="msg-quote-sender">{{ m.meta.reply_to_sender }}</span>
+                <span class="msg-quote-text">{{ m.meta.reply_to_preview }}</span>
+              </div>
+              <div class="msg-text"><span v-html="renderContent(m.content)"></span></div>
             </div>
           </template>
         </div>
+        </div>
+        <button v-if="showJumpLatest" class="jump-latest btn btn-primary" @click="jumpToLatest"
+                aria-label="回到最新消息" :title="unread ? unread + ' 条新消息 · 回到最新' : '回到最新'">
+          <span v-if="unread" class="jump-latest-badge">{{ unread > 99 ? '99+' : unread }}</span>
+          <span aria-hidden="true">↓</span>
+        </button>
       </div>
 
-      <footer class="composer d-flex gap-2 px-4 py-3 border-top">
-        <textarea ref="composer" v-model="draft" rows="1" class="form-control"
-          placeholder="以人类身份插话…… 用 @名字 指定下一个发言者。（回车发送）"
-          @keydown.enter.exact.prevent="sendMessage" @input="autoGrow"></textarea>
+      <footer class="composer d-flex align-items-end gap-2 px-4 py-3 border-top">
+        <div class="mention-wrap flex-grow-1 position-relative">
+          <div v-if="replyTo" class="reply-bar">
+            <span aria-hidden="true">↩</span>
+            <span class="reply-bar-sender">{{ replyTo.sender_name }}</span>
+            <span class="reply-bar-text text-truncate min-w-0 flex-grow-1">{{ replyTo.preview }}</span>
+            <button class="btn btn-sm btn-link p-0 text-secondary flex-shrink-0"
+                    @click="cancelReply" aria-label="取消回复" title="取消回复">✕</button>
+          </div>
+          <ul v-if="mention.open" class="mention-menu" role="listbox" aria-label="提及参与者">
+            <li v-for="(a, i) in mention.items" :key="a.id" role="option"
+                :class="['mention-item', { active: i === mention.index }]"
+                :aria-selected="i === mention.index"
+                @mousedown.prevent="applyMention(a)" @mouseenter="mention.index = i">
+              <span class="swatch" :style="{ background: a.color }"></span>
+              <span class="mention-name text-truncate">{{ a.name }}</span>
+              <span v-if="a.role" class="small text-secondary ms-auto ps-2">{{ a.role }}</span>
+            </li>
+          </ul>
+          <textarea ref="composer" v-model="draft" rows="1" class="form-control"
+            aria-label="消息输入框"
+            placeholder="以人类身份插话…… 打 @ 可提及参与者。（回车发送，Shift+回车换行）"
+            @keydown="onComposerKeydown" @input="onComposerInput" @blur="onComposerBlur"></textarea>
+        </div>
         <button class="btn btn-primary" @click="sendMessage">发送</button>
       </footer>
     </main>
@@ -179,6 +271,45 @@
           <option v-for="a in availableAgents" :key="a.id" :value="a.id">{{ a.name }}</option>
         </select>
       </div>
+
+      <!-- TODO：全局 + 当前主题（你=人工，可直接增删改）-->
+      <div class="todo-pane border-top p-3 overflow-auto">
+        <div class="d-flex align-items-center mb-1">
+          <span class="fw-semibold small">📋 全局 TODO</span>
+          <span class="text-secondary" style="font-size:11px;margin-left:auto">人工 + 授权 agent</span>
+        </div>
+        <ul class="list-unstyled mb-2">
+          <li v-for="t in globalTodos" :key="t.id" class="todo-item d-flex align-items-center gap-2 small">
+            <input type="checkbox" :checked="t.done" @change="toggleTodo(t)" />
+            <span class="flex-grow-1" :class="{ 'text-decoration-line-through text-secondary': t.done }">{{ t.text }}</span>
+            <button class="btn btn-sm btn-link p-0 text-secondary" @click="removeTodo(t.id)" title="删除">✕</button>
+          </li>
+          <li v-if="!globalTodos.length" class="text-secondary small">（空）</li>
+        </ul>
+        <div class="input-group input-group-sm mb-3">
+          <input class="form-control" v-model="newTodo.global" placeholder="新增全局待办…"
+                 @keydown.enter="addTodo('global', '')" />
+          <button class="btn btn-outline-secondary" @click="addTodo('global', '')">＋</button>
+        </div>
+
+        <template v-if="currentRoom">
+          <div class="fw-semibold small mb-1">📌 本主题 TODO
+            <span class="text-secondary" style="font-size:11px">（主持人 / 你）</span></div>
+          <ul class="list-unstyled mb-2">
+            <li v-for="t in currentRoomTodos" :key="t.id" class="todo-item d-flex align-items-center gap-2 small">
+              <input type="checkbox" :checked="t.done" @change="toggleTodo(t)" />
+              <span class="flex-grow-1" :class="{ 'text-decoration-line-through text-secondary': t.done }">{{ t.text }}</span>
+              <button class="btn btn-sm btn-link p-0 text-secondary" @click="removeTodo(t.id)" title="删除">✕</button>
+            </li>
+            <li v-if="!currentRoomTodos.length" class="text-secondary small">（空）</li>
+          </ul>
+          <div class="input-group input-group-sm">
+            <input class="form-control" v-model="newTodo.room" placeholder="新增本主题待办…"
+                   @keydown.enter="addTodo('room', currentRoomId)" />
+            <button class="btn btn-outline-secondary" @click="addTodo('room', currentRoomId)">＋</button>
+          </div>
+        </template>
+      </div>
     </aside>
 
     <!-- 弹窗（Bootstrap modal，内容由 Vue 渲染） -->
@@ -209,6 +340,110 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" @click="hideModal">取消</button>
             <button type="button" class="btn btn-primary" @click="saveModal">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 设置面板 -->
+    <div class="modal fade" tabindex="-1" role="dialog" aria-modal="true"
+         aria-labelledby="ccbSettingsTitle" ref="settingsModal">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title h6 mb-0" id="ccbSettingsTitle">⚙ 设置</h2>
+            <button type="button" class="btn-close" aria-label="关闭" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <!-- 外观 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-2">外观</div>
+              <div class="btn-group btn-group-sm" role="group" aria-label="主题">
+                <button type="button" class="btn"
+                        :class="theme === 'light' ? 'btn-primary' : 'btn-outline-secondary'"
+                        @click="applyTheme('light', true)">☀️ 浅色</button>
+                <button type="button" class="btn"
+                        :class="theme === 'dark' ? 'btn-primary' : 'btn-outline-secondary'"
+                        @click="applyTheme('dark', true)">🌙 深色</button>
+              </div>
+            </section>
+
+            <!-- 应答编排 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-1">应答编排</div>
+              <p class="text-secondary small mb-2">
+                避免一个问题被多个实例一拥而上重复回答：第一个认领的来答，其余排队、读完它的
+                答复后再做定向补充。改动即时生效。
+              </p>
+              <label class="form-label small mb-1" for="set-floor-scope">触发范围</label>
+              <select id="set-floor-scope" class="form-select form-select-sm mb-3"
+                      :value="server.floor_scope"
+                      @change="setFloorConfig({ scope: $event.target.value })">
+                <option value="off">关闭</option>
+                <option value="human">仅我（人类用户）的提问</option>
+                <option value="broadcast">所有广播问题</option>
+              </select>
+              <div v-if="server.floor_scope && server.floor_scope !== 'off'">
+                <label class="form-label small mb-1" for="set-floor-enf">执行强度</label>
+                <select id="set-floor-enf" class="form-select form-select-sm"
+                        :value="server.floor_enforcement"
+                        @change="setFloorConfig({ enforcement: $event.target.value })">
+                  <option value="soft">软 · 仅提示（实例自觉让行）</option>
+                  <option value="hard">硬 · 拦截（非应答位的回答被服务端挡回）</option>
+                </select>
+              </div>
+            </section>
+
+            <!-- 定向消息可见性 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-1">定向消息可见性</div>
+              <p class="text-secondary small mb-2">
+                当一条消息明确「主要发给」某个实例（你 @ 或引用回复它）时，其它实例怎么对待——
+                避免别人擅自插话。你（人类）始终看到全部。改动即时生效。
+              </p>
+              <select class="form-select form-select-sm"
+                      :value="server.directed_visibility"
+                      @change="setFloorConfig({ directed_visibility: $event.target.value })">
+                <option value="all">全部可见 —— 都能看到，非接收者标注「不是你」</option>
+                <option value="recipient">仅接收者可见 —— 其它实例完全看不到</option>
+                <option value="until_reply">回复后解禁 —— 先藏，接收者回复（或超时）后再向所有人开放</option>
+              </select>
+            </section>
+
+            <!-- 全局 TODO 授权 -->
+            <section class="mb-4">
+              <div class="fw-semibold mb-1">全局 TODO 授权</div>
+              <p class="text-secondary small mb-2">
+                全局 TODO 默认只有你（人类）能改。可在此把编辑权授予指定实例；其它实例无权改全局 TODO。
+              </p>
+              <div v-if="globalEditors.length" class="d-flex flex-wrap gap-1 mb-2">
+                <span v-for="id in globalEditors" :key="id"
+                      class="badge text-bg-secondary d-inline-flex align-items-center gap-1">
+                  {{ agentName(id) }}
+                  <button class="btn-close btn-close-white" style="font-size:.55rem"
+                          @click="revokeGlobalEditor(id)" aria-label="撤销授权"></button>
+                </span>
+              </div>
+              <select class="form-select form-select-sm"
+                      @change="grantGlobalEditor($event.target.value); $event.target.value=''">
+                <option value="">授权一个实例编辑全局 TODO…</option>
+                <option v-for="a in peerInstances" :key="a.id" :value="a.id"
+                        :disabled="globalEditors.includes(a.id)">
+                  {{ a.name }}（{{ a.role || 'peer' }}）</option>
+              </select>
+            </section>
+
+            <!-- 服务信息（只读） -->
+            <section>
+              <div class="fw-semibold mb-2">服务</div>
+              <dl class="row small text-secondary mb-0">
+                <dt class="col-4">数据</dt>
+                <dd class="col-8 font-monospace">.ccb/ccb.db</dd>
+              </dl>
+            </section>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-primary" data-bs-dismiss="modal">完成</button>
           </div>
         </div>
       </div>

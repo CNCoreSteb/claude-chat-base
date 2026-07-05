@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CCB 调试 · 状态追踪</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         background: #0b0e14; color: #d7dce5; }
+  a { color: #6cb6ff; }
+  header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 12px;
+           padding: 10px 16px; background: #11151f; border-bottom: 1px solid #232a38; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: #555; }
+  .dot.ok { background: #3fb950; box-shadow: 0 0 7px #3fb950; }
+  .dot.bad { background: #f85149; box-shadow: 0 0 7px #f85149; }
+  .spacer { flex: 1; }
+  button { font: inherit; background: #1c2230; color: #d7dce5; border: 1px solid #313a4d;
+           border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  button:hover { background: #252d3d; }
+  main { padding: 14px; display: grid; gap: 14px; }
+  .row { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  section { background: #11151f; border: 1px solid #232a38; border-radius: 8px; }
+  section > h2 { font-size: 12px; letter-spacing: .5px; text-transform: uppercase; color: #8b95a7;
+                 margin: 0; padding: 8px 12px; border-bottom: 1px solid #232a38;
+                 display: flex; align-items: center; gap: 8px; }
+  section > .body { padding: 10px 12px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #1c2230; vertical-align: top; }
+  th { color: #8b95a7; font-weight: 600; position: sticky; top: 0; background: #11151f; }
+  tr:hover td { background: #161b27; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; }
+  .kv dt { color: #8b95a7; } .kv dd { margin: 0; word-break: break-all; }
+  .badge { display: inline-block; padding: 0 6px; border-radius: 10px; font-size: 11px;
+           border: 1px solid #313a4d; }
+  .b-on { color: #3fb950; border-color: #2a5; } .b-off { color: #8b95a7; }
+  .b-warn { color: #d29922; border-color: #7a5; } .b-bad { color: #f85149; border-color: #a33; }
+  .b-floor { color: #d2a8ff; border-color: #63a; }
+  .mut { color: #6e7681; } .mono { font-family: inherit; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { height: 5px; border-radius: 3px; background: #1c2230; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: #3fb950; }
+  .bar.warn > i { background: #d29922; } .bar.bad > i { background: #f85149; }
+  #evlog { max-height: 320px; font-size: 11.5px; }
+  #evlog .ev { padding: 2px 0; border-bottom: 1px solid #161b27; white-space: pre-wrap; }
+  .et { display: inline-block; min-width: 124px; color: #6cb6ff; }
+  .et.answer_floor, .et.floor_config { color: #d2a8ff; }
+  .et.agent_updated { color: #d29922; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-all; font-size: 11.5px; }
+  details summary { cursor: pointer; color: #8b95a7; padding: 4px 0; }
+  .note { color: #d29922; }
+  .actions button { border-color: #7a3; }
+  .actions input, .actions select { font: inherit; background: #0b0e14; color: #d7dce5;
+           border: 1px solid #313a4d; border-radius: 5px; padding: 2px 6px; }
+  .pill { font-size: 11px; padding: 0 6px; border-radius: 8px; background: #1c2230; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛠️ CCB 调试</h1>
+  <span class="pill">主 :<b id="h-port">—</b></span>
+  <span class="pill">调试 :<b id="h-dport">—</b></span>
+  <span><span id="ws-dot" class="dot"></span> <span id="ws-state" class="mut">事件流…</span></span>
+  <span class="mut" id="clock">—</span>
+  <div class="spacer"></div>
+  <label class="mut"><input type="checkbox" id="auto" checked /> 自动刷新</label>
+  <button id="refresh">刷新</button>
+  <a href="/debug/state" target="_blank">/debug/state</a>
+</header>
+<main>
+  <section><h2>服务 Server</h2><div class="body kv" id="server"></div></section>
+  <div class="row">
+    <section><h2>Reconcile 循环</h2><div class="body kv" id="reconcile"></div></section>
+    <section><h2>WebSocket 订阅</h2><div class="body" id="websocket"></div></section>
+    <section><h2>常量阈值</h2><div class="body kv" id="constants"></div></section>
+  </div>
+  <section><h2>实例 / Agents <span class="mut" id="n-agents"></span></h2><div class="body" id="agents"></div></section>
+  <section><h2>房间 / 应答位 <span class="mut" id="n-rooms"></span></h2><div class="body" id="rooms"></div></section>
+  <section><h2>实时事件流 <span class="mut">/debug/ws</span>
+    <input id="evfilter" placeholder="按类型过滤，如 answer_floor" style="margin-left:auto;width:200px"/>
+    <label class="mut"><input type="checkbox" id="evpause"/> 暂停</label>
+    <button id="clearlog">清空</button></h2><div class="body" id="evlog"></div></section>
+  <section><h2>消息尾 <span class="mut">(最近 50)</span></h2><div class="body" id="messages"></div></section>
+  <div class="row">
+    <section><h2>Hub 内部</h2><div class="body" id="internals"></div></section>
+    <section><h2>数据库 SQLite</h2><div class="body" id="db"></div></section>
+  </div>
+  <section><h2>桥接侧不可见状态（说明）</h2><div class="body mut" id="bridgenote"></div></section>
+  <section class="actions"><h2>调试动作 <span class="note">⚠ 会改服务端状态</span></h2><div class="body" id="actions"></div></section>
+  <section><h2>原始 JSON</h2><div class="body"><details><summary>展开 /debug/state 全量</summary><pre id="raw"></pre></details></div></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let state = null, skew = 0;   // skew = serverNow - clientNow（用于本地推算倒计时）
+const enow = () => Date.now() / 1000 + skew;
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const num = (n, d = 0) => (n == null ? "—" : Number(n).toFixed(d));
+const ts = (t) => t == null ? "—" : new Date(t * 1000).toLocaleTimeString("zh-CN", { hour12: false });
+const ago = (t) => t == null ? "—" : (enow() - t).toFixed(1) + "s 前";
+const bytes = (b) => b == null ? "—" : b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(2) + " MB";
+const yn = (v, on = "是", off = "否") => v ? `<span class="badge b-on">${on}</span>` : `<span class="badge b-off">${off}</span>`;
+function cd(secs, warnAt = 10) {  // 倒计时彩色
+  if (secs == null) return "—";
+  const cls = secs <= 0 ? "b-bad" : secs <= warnAt ? "b-warn" : "b-on";
+  return `<span class="badge ${cls}">${secs.toFixed(1)}s</span>`;
+}
+
+let fetchInflight = false;
+async function fetchState() {
+  if (fetchInflight) return;   // 在途去重：避免 3s 轮询 + WS 防抖 + 手动刷新叠加，压到单连接 DB 锁
+  fetchInflight = true;
+  try {
+    const r = await fetch("/debug/state");
+    state = await r.json();
+    skew = state.now - Date.now() / 1000;
+    render();
+  } catch (e) { $("ws-state").textContent = "拉取失败"; }
+  finally { fetchInflight = false; }
+}
+
+function render() {
+  if (!state) return;
+  const s = state.server, n = enow();
+  $("h-port").textContent = s.port; $("h-dport").textContent = s.debug_port;
+  // 服务
+  $("server").innerHTML = [
+    ["运行时长", s.uptime_seconds == null ? "—" : Math.floor(s.uptime_seconds) + "s"],
+    ["host:port", `${esc(s.host)}:${s.port}　调试 127.0.0.1:${s.debug_port}`],
+    ["应答编排", `范围 <b>${esc(s.floor_scope)}</b> · 强度 <b>${esc(s.floor_enforcement)}</b> <span class="mut">(初始 ${esc(s.floor_scope_initial)}/${esc(s.floor_enforcement_initial)})</span>`],
+    ["data_dir", esc(s.data_dir)], ["preset", esc(s.preset)],
+    ["should_exit 主/调试", `${yn(s.main_should_exit, "退出中", "运行")} / ${yn(s.debug_should_exit, "退出中", "运行")}`],
+  ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+  // reconcile
+  const rc = state.reconcile, since = rc.last_run_at ? n - rc.last_run_at : null;
+  $("reconcile").innerHTML = [
+    ["上次运行", `${ts(rc.last_run_at)} <span class="mut">(${ago(rc.last_run_at)})</span>`],
+    ["距上次", since == null ? "—" : `<span class="badge ${since > 12 ? "b-bad" : "b-on"}">${since.toFixed(1)}s</span> ${since > 12 ? "<span class=note>循环可能停摆!</span>" : ""}`],
+    ["累计 tick", rc.tick_count],
+    ["最近错误", rc.last_error ? `<span class="b-bad">${esc(rc.last_error)}</span>` : "—"],
+  ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+  // websocket
+  const ws = state.websocket;
+  $("websocket").innerHTML = `<div class="kv"><dt>订阅者</dt><dd><b>${ws.subscriber_count}</b></dd></div>` +
+    (ws.queues || []).map((q, i) => {
+      const pct = q.maxsize ? q.qsize / q.maxsize : 0;
+      const cls = pct > 0.8 ? "bad" : pct > 0.5 ? "warn" : "";
+      return `<div style="margin-top:5px">#${i} ${q.qsize}/${q.maxsize}<div class="bar ${cls}"><i style="width:${(pct * 100).toFixed(0)}%"></i></div></div>`;
+    }).join("") || `<div class="mut" style="margin-top:5px">无队列</div>`;
+  // constants
+  $("constants").innerHTML = Object.entries(state.constants)
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  // agents
+  $("n-agents").textContent = `(${state.agents.length})`;
+  $("agents").innerHTML = state.agents.length ? `<table><thead><tr>
+    <th>名称</th><th>kind</th><th>职责</th><th>在线</th><th>last_seen</th><th>掉线倒计时</th>
+    <th>kicked</th><th>所在主题</th><th>应答位</th><th>仓库路径</th></tr></thead><tbody>` +
+    state.agents.map(a => {
+      const sd = a.seconds_to_offline;
+      return `<tr>
+        <td><b>${esc(a.name)}</b><div class="mut" style="font-size:11px">${esc(a.id)}</div></td>
+        <td>${esc(a.kind)}</td><td>${esc(a.role) || "—"}</td>
+        <td>${a.online ? `<span class="badge b-on">在线</span>` : `<span class="badge b-off">离线</span>`}${a.stale ? ` <span class="badge b-warn">stale</span>` : ""}</td>
+        <td>${ts(a.last_seen)}<div class="mut" style="font-size:11px">${a.staleness == null ? "" : a.staleness.toFixed(1) + "s 前"}</div></td>
+        <td class="num">${a.online ? cd(sd == null ? null : (a.last_seen ? Math.max(0, state.constants.PEER_STALE_SECONDS - (n - a.last_seen)) : null)) : "—"}</td>
+        <td>${a.kicked ? `<span class="badge b-bad">KICKED</span>` : "—"}</td>
+        <td>${(a.rooms || []).map(r => esc(r.name)).join("、") || "—"}</td>
+        <td>${(a.holds_floor_in || []).length ? `<span class="badge b-floor">持有×${a.holds_floor_in.length}</span>` : ""}${(a.queued_in || []).length ? ` <span class="badge">排队×${a.queued_in.length}</span>` : (a.holds_floor_in || []).length ? "" : "—"}</td>
+        <td class="mut">${esc(a.repo_path) || "—"}</td></tr>`;
+    }).join("") + `</tbody></table>` : `<div class="mut">暂无实例</div>`;
+  // rooms + floor
+  $("n-rooms").textContent = `(${state.rooms.length})`;
+  $("rooms").innerHTML = state.rooms.length ? `<table><thead><tr>
+    <th>主题</th><th>成员</th><th>消息</th><th>状态</th><th>应答位 holder</th><th>队列</th>
+    <th>释放/关闭倒计时</th><th>被挡(hard)</th></tr></thead><tbody>` +
+    state.rooms.map(r => {
+      const f = r.floor;
+      const rel = (f.holder && f.claimed_at) ? Math.max(0, state.constants.ANSWER_FLOOR_TTL - (n - f.claimed_at)) : null;
+      const close = (f.opened_at && !f.holder && !(f.queue || []).length) ? Math.max(0, state.constants.ANSWER_ROUND_OPEN_TTL - (n - f.opened_at)) : null;
+      return `<tr>
+        <td><b>${esc(r.name)}</b><div class="mut" style="font-size:11px">${esc(r.topic) || ""}</div></td>
+        <td>${(r.agent_ids_resolved || []).map(m => m.name ? esc(m.name) : `<span class="b-bad">孤儿:${esc(m.id)}</span>`).join("、") || "—"}</td>
+        <td class="num">${r.message_count}<div class="mut" style="font-size:11px">${r.last_ts ? ts(r.last_ts) : ""}</div></td>
+        <td>${f.active ? `<span class="badge b-floor">轮进行中</span>` : `<span class="mut">空闲</span>`}</td>
+        <td>${f.holder_name ? `<span class="badge b-floor">🖊 ${esc(f.holder_name)}</span>` : (f.active ? "<span class=b-warn>待应答</span>" : "—")}</td>
+        <td>${(f.queue_names || []).map(esc).join(" → ") || "—"}</td>
+        <td class="num">${f.holder ? "释放 " + cd(rel) : close != null ? "关闭 " + cd(close) : "—"}</td>
+        <td>${(f.blocked_agents || []).length ? `<span class="badge b-bad">${f.blocked_agents.length}</span>` : "—"}</td></tr>`;
+    }).join("") + `</tbody></table>` : `<div class="mut">暂无主题</div>`;
+  // messages tail
+  $("messages").innerHTML = (state.messages_tail || []).length ? `<table><thead><tr>
+    <th>时间</th><th>发送者</th><th>角色</th><th>内容</th><th>meta</th></tr></thead><tbody>` +
+    state.messages_tail.map(m => {
+      const meta = m.meta || {}, chips = [];
+      if (meta.to_name) chips.push(`→${esc(meta.to_name)}`);
+      if ((meta.mentions || []).length) chips.push(`@×${meta.mentions.length}`);
+      if (meta.reply_to_sender) chips.push(`↩${esc(meta.reply_to_sender)}`);
+      if (meta.is_question) chips.push("❓提问");
+      if (meta.kicked) chips.push("kicked");
+      const c = (m.content || "").slice(0, 160);
+      return `<tr><td class="mut">${ts(m.ts)}</td><td>${esc(m.sender_name)}</td><td>${esc(m.role)}</td>
+        <td>${esc(c)}${(m.content || "").length > 160 ? "…" : ""}</td>
+        <td class="mut">${chips.map(x => `<span class="pill">${x}</span>`).join(" ")}</td></tr>`;
+    }).join("") + `</tbody></table>` : `<div class="mut">暂无消息</div>`;
+  // internals
+  $("internals").innerHTML = [
+    ["kicked 黑名单", (state.kicked || []).map(k => esc(k.name || k.id)).join("、") || "—"],
+    ["邀请锁", (state.invite_locks || []).map(l => `${esc(l.room_id)}${l.locked ? "🔒" : ""}`).join("、") || "—"],
+  ].map(([k, v]) => `<div class="kv"><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("");
+  // db
+  const db = state.db, pg = db.pragma || {}, fs = db.file_sizes || {};
+  $("db").innerHTML = [
+    ["db_path", esc(db.db_path)],
+    ["文件大小", `db ${bytes(fs.db)} · wal ${bytes(fs.wal)} · shm ${bytes(fs.shm)}`],
+    ["消息总数", db.total_messages],
+    ["内存/DB agents", `${db.agents_in_memory} / ${db.agents_in_db}`],
+    ["内存/DB rooms", `${db.rooms_in_memory} / ${db.rooms_in_db}`],
+    ["孤儿房间(消息有/房间无)", (db.orphan_room_ids || []).length ? `<span class="b-bad">${(db.orphan_room_ids).map(esc).join(", ")}</span>` : "—"],
+    ["ts 游标 vs DB max", `${num(db.last_ts_cursor, 4)} vs ${num(db.db_max_ts, 4)} (Δ ${num(db.cursor_vs_max_delta, 6)})`],
+    ["游标 vs 墙钟", num(db.cursor_vs_wallclock, 3) + "s"],
+    ["PRAGMA", `journal=${esc(pg.journal_mode)} fk=${pg.foreign_keys} pages=${pg.page_count}×${pg.page_size} free=${pg.freelist_count} 逻辑${bytes(pg.logical_size_bytes)}`],
+    ["写锁占用", yn(db.lock_locked, "占用中", "空闲")],
+    ["每房间消息数", (db.per_room_counts || []).map(p => `${esc(p.room_id)}:${p.count}`).join(" · ") || "—"],
+  ].map(([k, v]) => `<div class="kv"><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("");
+  // bridge note
+  $("bridgenote").innerHTML = "服务端只能看到每个 agent 的：在线/last_seen(靠桥接心跳)、kicked、所在主题、收发的消息。" +
+    "<b>看不到</b>（只活在各自桥接进程 _session 或仓库 .ccb-peer.json 里）：该 agent 的当前主题指针、wait 读游标 last_ts、" +
+    "reply_to 路由缓存 msg_rooms、进行中的 ask、CCB_URL、心跳循环存活——这些只能从 online/last_seen 间接推断。";
+  // raw
+  $("raw").textContent = JSON.stringify(state, null, 2);
+  renderActions();
+}
+
+function renderActions() {
+  if ($("actions").dataset.init) return;
+  $("actions").dataset.init = "1";
+  $("actions").innerHTML = `
+    <div style="display:grid;gap:8px">
+      <div>实例 <input id="a-kick" placeholder="agent_id" size="20"/>
+        <button onclick="act('kick',{agent_id:val('a-kick')})">kick</button>
+        <button onclick="act('clear-kick',{agent_id:val('a-kick')})">clear-kick</button>
+        <button onclick="act('set-online',{agent_id:val('a-kick')})">置在线</button>
+        <button onclick="act('set-offline',{agent_id:val('a-kick')})">置离线</button></div>
+      <div>强制释放应答位 <input id="a-room" placeholder="room_id" size="20"/>
+        <button onclick="act('force-release-floor',{room_id:val('a-room')})">force-release</button></div>
+      <div>应答编排 范围 <select id="a-scope"><option>off</option><option>human</option><option>broadcast</option></select>
+        强度 <select id="a-enf"><option>soft</option><option>hard</option></select>
+        <button onclick="act('set-floor-config',{scope:val('a-scope'),enforcement:val('a-enf')})">应用</button></div>
+      <div><button onclick="act('reconcile',{})">立即 reconcile（离线/TTL 判定）</button>
+        <button onclick="exportState()">导出 state.json</button>
+        <button onclick="copyState()">复制 JSON</button></div>
+      <div class="mut" id="a-result"></div>
+    </div>`;
+}
+window.exportState = () => {
+  if (!state) return;
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "ccb-debug-state.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+window.copyState = async () => {
+  if (!state) return;
+  try { await navigator.clipboard.writeText(JSON.stringify(state, null, 2));
+    $("a-result").textContent = "已复制 state JSON"; }
+  catch (e) { $("a-result").textContent = "复制失败: " + e; }
+};
+window.val = (id) => $(id).value.trim();
+window.act = async (name, body) => {
+  try {
+    const r = await fetch("/debug/actions/" + name, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("a-result").textContent = name + " → " + (await r.text());
+    fetchState();
+  } catch (e) { $("a-result").textContent = "失败: " + e; }
+};
+
+// 事件流
+let evCount = 0;
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/debug/ws`);
+  ws.onopen = () => { $("ws-dot").className = "dot ok"; $("ws-state").textContent = "事件流已连"; };
+  ws.onclose = () => { $("ws-dot").className = "dot bad"; $("ws-state").textContent = "事件流断开 重连…"; setTimeout(connectWS, 1500); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+    appendEvent(ev);
+    // 与状态相关的事件 → 防抖刷新一次
+    if (["answer_floor", "floor_config", "agent_updated", "agent_added", "agent_removed",
+         "room_added", "room_removed", "room_updated"].includes(ev.type)) debouncedFetch();
+  };
+}
+let dbt = null;
+function debouncedFetch() { clearTimeout(dbt); dbt = setTimeout(fetchState, 250); }
+function evMatches(type) {
+  const f = ($("evfilter").value || "").trim().toLowerCase();
+  return !f || String(type).toLowerCase().includes(f);
+}
+function appendEvent(ev) {
+  if ($("evpause").checked) return;   // 暂停只停日志追加，不影响状态刷新
+  const el = $("evlog");
+  const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const sum = JSON.stringify(ev).slice(0, 300);
+  const div = document.createElement("div");
+  div.className = "ev";
+  div.dataset.type = ev.type || "";
+  div.style.display = evMatches(ev.type) ? "" : "none";
+  div.innerHTML = `<span class="mut">${t}</span> <span class="et ${esc(ev.type)}">${esc(ev.type)}</span> <span class="mut">${esc(sum)}</span>`;
+  el.insertBefore(div, el.firstChild);
+  if (++evCount > 300) { while (el.children.length > 300) el.removeChild(el.lastChild); }
+}
+$("evfilter").oninput = () => {
+  for (const div of $("evlog").children) div.style.display = evMatches(div.dataset.type) ? "" : "none";
+};
+$("clearlog").onclick = () => { $("evlog").innerHTML = ""; evCount = 0; };
+
+// 时钟 + 自动刷新 + 本地 tick（让倒计时每秒走）
+setInterval(() => {
+  $("clock").textContent = "server now " + ts(enow());
+  if (state) render();
+}, 1000);
+let poll = null;
+function setAuto(on) { clearInterval(poll); if (on) poll = setInterval(fetchState, 3000); }
+$("auto").onchange = (e) => setAuto(e.target.checked);
+$("refresh").onclick = fetchState;
+
+fetchState();
+connectWS();
+setAuto(true);
+</script>
+</body>
+</html>

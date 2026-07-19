@@ -7,6 +7,92 @@ const PALETTE = [
   "#ef4444", "#8b5cf6", "#14b8a6", "#f97316", "#3b82f6",
 ];
 
+// ----- Markdown 渲染（marked + DOMPurify + highlight.js + KaTeX + Mermaid）-----
+const escHtml = (s) => String(s == null ? "" : s)
+  .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// @提及做成 marked 的行内扩展：由解析器决定“哪里是正文”，代码块/行内代码里的 @ 不会被误高亮。
+// 字符集与服务端 Python 的 `@([\w-]+)` 对齐（\p{L}\p{N}，Unicode 感知），与输入框补全口径一致。
+const MENTION_RE = /^@([\p{L}\p{N}_-]+)/u;
+// 数学公式（KaTeX）：$$…$$ 块级；$…$ 行内。行内规则按 Pandoc 惯例收紧——起始 $ 后、结束 $ 前
+// 不许是空白，结束 $ 后不许紧跟数字，避免 “$5 和 $10” 这类价格被误判成公式。
+const BLOCK_MATH_RE = /^\$\$([\s\S]+?)\$\$(?:\n+|$)/;
+const INLINE_MATH_RE = /^\$\$([\s\S]+?)\$\$|^\$(?!\s)((?:\\\$|[^\n$])+?)(?<!\s)\$(?!\d)/;
+const katexHtml = (tex, displayMode) => {
+  try { return katex.renderToString(tex, { throwOnError: false, displayMode }); }
+  catch { return `<code>${escHtml(tex)}</code>`; }   // KaTeX 罢工也别丢内容
+};
+
+marked.use({
+  gfm: true,
+  breaks: true,   // 聊天习惯：单个换行即换行（等价于旧版 pre-wrap 的观感）
+  renderer: {
+    // 围栏代码块三分支：```mermaid 输出占位 div（消毒后由 mermaid.run 就地渲染成 SVG，
+    // 源码存进 data-source 供主题切换时重渲染）；已知语言走 highlight.js；其余纯转义。
+    code({ text, lang }) {
+      const language = (lang || "").trim().split(/\s+/)[0].toLowerCase();
+      if (language === "mermaid") {
+        return `<div class="mermaid" data-source="${encodeURIComponent(text)}">${escHtml(text)}</div>`;
+      }
+      if (language && typeof hljs !== "undefined" && hljs.getLanguage(language)) {
+        const out = hljs.highlight(text, { language, ignoreIllegals: true }).value;
+        return `<pre><code class="hljs language-${escHtml(language)}">${out}</code></pre>`;
+      }
+      return `<pre><code>${escHtml(text)}</code></pre>`;
+    },
+  },
+  extensions: [{
+    name: "mention",
+    level: "inline",
+    start(src) { const i = src.indexOf("@"); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = MENTION_RE.exec(src);
+      if (m) return { type: "mention", raw: m[0], text: m[1] };
+    },
+    renderer(token) { return `<span class="mention">${token.raw}</span>`; },
+  }, {
+    name: "blockMath",
+    level: "block",
+    start(src) { const i = src.indexOf("$$"); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = BLOCK_MATH_RE.exec(src);
+      if (m) return { type: "blockMath", raw: m[0], text: m[1].trim() };
+    },
+    renderer(token) { return `<p class="math-block">${katexHtml(token.text, true)}</p>`; },
+  }, {
+    name: "inlineMath",
+    level: "inline",
+    start(src) { const i = src.indexOf("$"); return i < 0 ? undefined : i; },
+    tokenizer(src) {
+      const m = INLINE_MATH_RE.exec(src);
+      if (!m) return;
+      if (m[1] != null) return { type: "inlineMath", raw: m[0], text: m[1].trim(), display: true };
+      return { type: "inlineMath", raw: m[0], text: m[2], display: false };
+    },
+    renderer(token) { return katexHtml(token.text, token.display); },
+  }],
+});
+
+// Mermaid：不自动扫描（startOnLoad:false），由 renderMermaidSoon 在 DOM 更新后手动跑；
+// securityLevel:strict 禁掉图内脚本/点击注入；渲染失败不画“炸弹”，保留源码文本可读。
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "strict",
+  suppressErrorRendering: true,
+  theme: document.documentElement.getAttribute("data-bs-theme") === "light" ? "default" : "dark",
+});
+// 消毒后统一给外链加 target=_blank + noopener，点开不顶掉聊天页、也不泄露 opener。
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName === "A" && node.getAttribute("href")) {
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
+// 渲染结果缓存：消息内容不可变，而 v-for 在每次列表变化时会对全部消息重算 renderContent，
+// 不缓存的话长会话（上限 2000 条）每来一条新消息就要整屏重新解析一遍 Markdown。
+const MD_CACHE = new Map();
+const MD_CACHE_MAX = 2000;
+
 createApp({
   data() {
     return {
@@ -115,12 +201,35 @@ createApp({
       const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
       return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => map[c]);
     },
-    // 先转义再高亮 @点名。用 Unicode 属性（\p{L}\p{N}）对齐服务端 Python 的 `@([\w-]+)`
-    // （Python \w 是 Unicode 感知的），从而日/韩/带重音等非 CJK 名字也能正确高亮，不再与服务端解析口径不一致。
+    // 消息正文按完整 Markdown（GFM：表格/任务列表/删除线/代码块…）渲染；@提及高亮由
+    // marked 扩展完成。输出一律过 DOMPurify（仅 HTML profile），防各实例发来的内容注入脚本。
     renderContent(text) {
-      return this.escapeHtml(text).replace(
-        /@([\p{L}\p{N}_-]+)/gu, '<span class="mention">@$1</span>',
-      );
+      const raw = String(text == null ? "" : text);
+      const hit = MD_CACHE.get(raw);
+      if (hit !== undefined) return hit;
+      let html;
+      try {
+        // mathMl/svg profile 是给 KaTeX 输出放行：<math> 是无障碍标注，根号、伸缩括号等
+        // 则是内联 SVG 画的（Mermaid 的 SVG 不走此管道——渲染发生在消毒之后）。
+        html = DOMPurify.sanitize(marked.parse(raw),
+          { USE_PROFILES: { html: true, mathMl: true, svg: true } });
+      } catch {
+        // 解析异常时退回纯文本转义 + @高亮，消息永远可读。
+        html = this.escapeHtml(raw).replace(
+          /@([\p{L}\p{N}_-]+)/gu, '<span class="mention">@$1</span>',
+        );
+      }
+      if (MD_CACHE.size >= MD_CACHE_MAX) MD_CACHE.delete(MD_CACHE.keys().next().value);
+      MD_CACHE.set(raw, html);
+      return html;
+    },
+    // 把对话区里尚未处理的 ```mermaid 占位块渲染成 SVG。在 updated() 里统一触发：
+    // 快照加载、来新消息、切主题都会走到；mermaid 自己用 data-processed 标记防重复。
+    renderMermaidSoon() {
+      this.$nextTick(() => {
+        const nodes = document.querySelectorAll(".msg-text .mermaid:not([data-processed])");
+        if (nodes.length) mermaid.run({ nodes, suppressErrors: true }).catch(() => {});
+      });
     },
     statusLabel(a) {
       return (a.role ? a.role + " · " : "")
@@ -574,6 +683,22 @@ createApp({
       if (persist) {
         try { localStorage.setItem("ccb-theme", theme); } catch (e) { /* 隐私模式：退化为内存态 */ }
       }
+      // 代码高亮配色跟随主题（深浅各一张样式表，启用其一）。
+      const light = document.getElementById("hljs-light");
+      const dark = document.getElementById("hljs-dark");
+      if (light && dark) { light.disabled = theme === "dark"; dark.disabled = theme !== "dark"; }
+      // Mermaid 主题跟随：换配置后把已渲染的图从 data-source 还原源码、清掉处理标记，重画。
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        suppressErrorRendering: true,
+        theme: theme === "light" ? "default" : "dark",
+      });
+      document.querySelectorAll(".msg-text .mermaid[data-processed]").forEach((el) => {
+        el.textContent = decodeURIComponent(el.dataset.source || "");
+        el.removeAttribute("data-processed");
+      });
+      this.renderMermaidSoon();
     },
     toggleTheme() {
       this.applyTheme(this.theme === "dark" ? "light" : "dark", true);
@@ -581,6 +706,9 @@ createApp({
 
     toast(msg) { this.toastMsg = msg; this.bsToast.show(); },
   },
+
+  // 每次 DOM 更新后补渲染新出现的 Mermaid 块（v-html 内容 Vue 不会自己处理）。
+  updated() { this.renderMermaidSoon(); },
 
   mounted() {
     this.bsModal = new bootstrap.Modal(this.$refs.modal);

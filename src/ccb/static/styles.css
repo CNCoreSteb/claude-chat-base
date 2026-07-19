@@ -83,9 +83,74 @@ body { overflow: hidden; }
   padding: 10px 14px;
   border-radius: 4px 12px 12px 12px;
   line-height: 1.7;
-  white-space: pre-wrap;
+  /* 正文已是 Markdown 渲染出的 HTML：换行由 marked(breaks) 生成 <br>，不能再用 pre-wrap，
+     否则块级标签之间的源码换行会被渲染成多余空行。 */
   word-wrap: break-word;
 }
+
+/* ----- 气泡内 Markdown 排版（全部限定在 .msg-text 作用域内） ----- */
+.msg-text > :first-child { margin-top: 0; }
+.msg-text > :last-child { margin-bottom: 0; }
+.msg-text p, .msg-text ul, .msg-text ol,
+.msg-text pre, .msg-text blockquote, .msg-text table { margin: 0 0 8px; }
+/* 标题：聊天气泡里收敛尺寸，只保留层级感。 */
+.msg-text h1, .msg-text h2, .msg-text h3,
+.msg-text h4, .msg-text h5, .msg-text h6 { margin: 4px 0 8px; font-weight: 600; line-height: 1.4; }
+.msg-text h1 { font-size: 1.3em; }
+.msg-text h2 { font-size: 1.2em; }
+.msg-text h3 { font-size: 1.1em; }
+.msg-text h4, .msg-text h5, .msg-text h6 { font-size: 1em; }
+/* 行内代码 / 代码块：底色用 body-bg 与气泡的 tertiary-bg 拉开一档，深浅主题都成立。 */
+.msg-text code {
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.875em;
+  color: var(--bs-body-color);
+}
+.msg-text pre {
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  line-height: 1.55;
+}
+.msg-text pre code { background: none; border: 0; padding: 0; font-size: 0.875em; white-space: pre; }
+.msg-text blockquote {
+  border-left: 3px solid var(--bs-border-color);
+  padding: 2px 12px;
+  color: var(--bs-secondary-color);
+}
+.msg-text blockquote > :last-child { margin-bottom: 0; }
+.msg-text ul, .msg-text ol { padding-left: 1.5em; }
+.msg-text li > ul, .msg-text li > ol { margin-bottom: 0; }
+/* GFM 任务列表：去掉项目符号，复选框与文字对齐。 */
+.msg-text li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.2em; }
+.msg-text li > input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; }
+/* 表格：宽表在气泡内自行横向滚动，不撑破布局。 */
+.msg-text table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.msg-text th, .msg-text td { border: 1px solid var(--bs-border-color); padding: 4px 10px; }
+.msg-text th { background: var(--bs-secondary-bg); font-weight: 600; }
+.msg-text img { max-width: 100%; border-radius: 6px; }
+.msg-text hr { margin: 10px 0; border-color: var(--bs-border-color); opacity: 1; }
+.msg-text a { word-break: break-all; }
+/* Mermaid 图表：渲染前显示源码（pre-wrap，语法错误时也保持可读），渲染后居中放 SVG。 */
+.msg-text .mermaid {
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  font-size: 0.875em;
+}
+.msg-text .mermaid[data-processed] { display: flex; justify-content: center; white-space: normal; font-size: 1em; }
+.msg-text .mermaid svg { max-width: 100%; height: auto; }
+/* KaTeX 数学公式：块级居中、超宽自行横向滚动。 */
+.msg-text .math-block { text-align: center; overflow-x: auto; padding: 2px 0; }
 .msg--human .msg-text {
   background: var(--bs-primary-bg-subtle);
   border-color: var(--bs-primary-border-subtle);

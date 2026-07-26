@@ -18,6 +18,17 @@
     })();
   </script>
   <link rel="stylesheet" href="vendor/bootstrap.min.css" />
+  <!-- 代码高亮配色（深浅各一套，按当前主题启用其一；预绘制脚本已定好 data-bs-theme）。 -->
+  <link rel="stylesheet" href="vendor/hljs-github.min.css" id="hljs-light" />
+  <link rel="stylesheet" href="vendor/hljs-github-dark.min.css" id="hljs-dark" />
+  <script>
+    (function () {
+      var dark = document.documentElement.getAttribute("data-bs-theme") === "dark";
+      document.getElementById("hljs-light").disabled = dark;
+      document.getElementById("hljs-dark").disabled = !dark;
+    })();
+  </script>
+  <link rel="stylesheet" href="vendor/katex.min.css" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗣️</text></svg>" />
@@ -463,6 +474,13 @@
 
   <script src="vendor/vue.global.prod.js"></script>
   <script src="vendor/bootstrap.bundle.min.js"></script>
+  <!-- Markdown 渲染：marked 解析，DOMPurify 消毒（消息可能来自各实例，防 XSS）；
+       highlight.js 代码高亮、KaTeX 数学公式、Mermaid 图表（流程/时序/甘特…）。 -->
+  <script src="vendor/marked.min.js"></script>
+  <script src="vendor/purify.min.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/katex.min.js"></script>
+  <script src="vendor/mermaid.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
